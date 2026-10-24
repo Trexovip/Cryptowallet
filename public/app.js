@@ -499,7 +499,11 @@ async function renderStaff(){
             ? `<input class="input lim-inp" data-id="${u.id}" type="number" step="0.01" min="0" value="${u.auto_approve_limit != null ? esc(u.auto_approve_limit) : ""}" placeholder="default" style="width:96px;display:inline-block;padding:6px 8px">
                <button class="btn btn-ghost btn-sm lim-save" data-id="${u.id}">Set</button>`
             : "—"}</td>
-          <td class="row-actions"><button class="btn btn-ghost btn-sm" data-usertx="${u.id}">Transactions</button></td></tr>`).join("")}
+          <td class="row-actions">
+            <button class="btn btn-ghost btn-sm" data-usertx="${u.id}">Transactions</button>
+            <button class="btn btn-ghost btn-sm pw-reset" data-id="${u.id}" data-name="${esc(u.username)}">Reset pw</button>
+            ${u.id !== state.user.id ? `<button class="btn btn-ghost btn-sm act-toggle" data-id="${u.id}" data-name="${esc(u.username)}" data-active="${u.is_active ? 1 : 0}">${u.is_active ? "Disable" : "Enable"}</button>` : ""}
+          </td></tr>`).join("")}
         </tbody></table></div></div>`;
     $("#nuCreate").onclick = () => {
       const username = $("#nuUser").value.trim(), password = $("#nuPass").value, role = $("#nuRole").value;
@@ -513,6 +517,23 @@ async function renderStaff(){
       const v = inp.value.trim();
       act(() => api("/users/" + id + "/limit", {method:"POST", body:{ limit: v === "" ? null : parseFloat(v) }}),
         v === "" ? "Limit cleared (uses default)" : "Limit updated", renderStaff);
+    });
+    document.querySelectorAll(".pw-reset").forEach(b => b.onclick = async () => {
+      const ok = await confirmModal({ title:"Reset password", okLabel:"Reset",
+        bodyHtml:`<p style="margin:0 0 10px;font-size:13.5px;color:var(--muted)">Set a new password for <b>${esc(b.dataset.name)}</b> (min 8 characters). Share it securely.</p>
+          <input id="rpwInput" class="input" type="text" placeholder="new password" autocomplete="off">` });
+      if (!ok) return;
+      const pw = (document.getElementById("rpwInput") || {}).value || "";
+      if (pw.length < 8) return toast("Password must be at least 8 characters", true);
+      act(() => api("/users/" + b.dataset.id + "/password", {method:"POST", body:{ password: pw }}), "Password reset", () => {});
+    });
+    document.querySelectorAll(".act-toggle").forEach(b => b.onclick = async () => {
+      const target = b.dataset.active !== "1"; // currently inactive -> enable
+      const verb = target ? "Enable" : "Disable";
+      const ok = await confirmModal({ title:`${verb} user`, okLabel:verb, okClass: target ? "btn-accent" : "btn-ghost",
+        bodyHtml:`<p style="margin:0;font-size:14px;color:var(--muted)">${verb} <b>${esc(b.dataset.name)}</b>? ${target ? "They will be able to sign in again." : "They will be signed out and blocked from signing in."}</p>` });
+      if (!ok) return;
+      act(() => api("/users/" + b.dataset.id + "/active", {method:"POST", body:{ active: target }}), verb + "d", renderStaff);
     });
   }catch(e){ $("#sBody").innerHTML = emptyState(e.message); }
 }
@@ -580,6 +601,8 @@ function showReceipt(r){
     rRow("Receiver wallet", r.receiver_address ? `<span class="mono brk">${esc(r.receiver_address)}</span>` : "—") +
     `<div class="r-sep"></div>` +
     rRow("Amount", `<b>${amount}</b>`) +
+    (r.deposit_fee_percent ? rRow(`Deposit fee (${esc(r.deposit_fee_percent)}%)`, `${fmtUsdt(r.fee_amount)} USDT`) : "") +
+    (r.net_amount != null ? rRow("Net credited", `<b>${fmtUsdt(r.net_amount)} USDT</b>`) : "") +
     rRow("Value (USD)", `${usd} <span class="r-sub">(${rate})</span>`) +
     `<div class="r-sep"></div>` +
     rRow("Transaction ID", `<span class="mono">${esc(r.receipt_id)}</span>`) +
@@ -827,21 +850,65 @@ async function renderAddressBook(){
 /* ---------- settings (admin) ---------- */
 async function renderSettings(){
   const sec = $("#sec-settings");
-  sec.innerHTML = `<div class="page-head"><h1>Settings</h1><p>Approval limits and treasury policy.</p></div><div id="stBody">Loading…</div>`;
+  sec.innerHTML = `<div class="page-head"><h1>Settings</h1><p>Operational configuration, keys, and policy.</p></div><div id="stBody">Loading…</div>`;
   try{
-    const s = await api("/settings");
-    $("#stBody").innerHTML = `<div class="panel"><div class="panel-head"><h2>Payout policy</h2></div><div class="panel-body">
-      <div class="field"><label>Default staff auto-approve limit (USDT, per transaction)</label>
-        <input id="stLimit" class="input" type="number" step="0.01" min="0" value="${esc(s.staff_auto_approve_limit)}">
-        <div class="hint">Applies to staff without their own limit. Set per-staff limits on the Staff screen. 0 = require approval for every staff payout.</div></div>
-      <div class="field"><label>Treasury hold-back when distributing (%)</label>
-        <input id="stHold" class="input" type="number" step="1" min="0" max="100" value="${esc(s.treasury_hold_percent)}">
-        <div class="hint">Percentage kept in treasury when you distribute to the pool.</div></div>
-      <button class="btn btn-primary" id="stSave">Save settings</button></div></div>`;
-    $("#stSave").onclick = () => act(() => api("/settings", {method:"POST", body:{
-      staff_auto_approve_limit: parseFloat($("#stLimit").value) || 0,
-      treasury_hold_percent: parseFloat($("#stHold").value) || 0
-    }}), "Settings saved", renderSettings);
+    const c = await api("/admin/config");
+    $("#stBody").innerHTML = `
+    <div class="panel"><div class="panel-head"><h2>Payout &amp; deposit policy</h2></div><div class="panel-body">
+      <div class="form-grid">
+        <div class="field"><label>Default staff auto-approve limit (USDT)</label>
+          <input id="cfgLimit" class="input" type="number" step="0.01" min="0" value="${esc(c.staff_auto_approve_limit)}">
+          <div class="hint">Used for staff without their own limit (set per-staff on the Staff screen).</div></div>
+        <div class="field"><label>Deposit fee (%)</label>
+          <input id="cfgFee" class="input" type="number" step="0.01" min="0" max="100" value="${esc(c.deposit_fee_percent)}">
+          <div class="hint">Shown on deposit receipts as fee + net credited.</div></div>
+      </div>
+      <div class="field"><label>Treasury hold-back on distribute (%)</label>
+        <input id="cfgHold" class="input" type="number" step="1" min="0" max="100" value="${esc(c.treasury_hold_percent)}"></div>
+    </div></div>
+
+    <div class="panel"><div class="panel-head"><h2>Network &amp; keys</h2></div><div class="panel-body">
+      <div class="form-grid">
+        <div class="field"><label>Network</label><select id="cfgNet" class="input">
+          <option value="mainnet"${c.tron_network==="mainnet"?" selected":""}>Mainnet (live funds)</option>
+          <option value="nile"${c.tron_network==="nile"?" selected":""}>Nile testnet</option>
+          <option value="shasta"${c.tron_network==="shasta"?" selected":""}>Shasta testnet</option></select></div>
+        <div class="field"><label>TronGrid API key</label>
+          <input id="cfgKey" class="input mono" placeholder="${c.has_trongrid_key?esc(c.trongrid_api_key_masked)+'  (leave blank to keep)':'required for mainnet'}">
+          <div class="hint">Leave blank to keep the current key.</div></div>
+      </div>
+      <div class="field"><label>USDT contract (TRC-20)</label><input id="cfgContract" class="input mono" value="${esc(c.usdt_contract)}"></div>
+      <div class="form-grid">
+        <div class="field"><label>Min sweep (USDT)</label><input id="cfgSweep" class="input" type="number" step="0.01" min="0" value="${esc(c.sweep_min_usdt)}"></div>
+        <div class="field"><label>Gas top-up (TRX)</label><input id="cfgGas" class="input" type="number" step="1" min="0" value="${esc(c.gas_fund_trx)}"></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>Pool float (USDT)</label><input id="cfgFloat" class="input" type="number" step="1" min="0" value="${esc(c.disbursement_float_usdt)}"></div>
+        <div class="field"><label>Deposit scan interval (seconds)</label><input id="cfgPoll" class="input" type="number" step="1" min="5" value="${esc(c.poll_interval_seconds)}">
+          <div class="hint">Takes effect on next restart.</div></div>
+      </div>
+    </div></div>
+
+    <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
+      <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
+    </div></div>
+
+    <button class="btn btn-primary" id="cfgSave">Save settings</button>`;
+    $("#cfgSave").onclick = () => {
+      const body = {
+        staff_auto_approve_limit: parseFloat($("#cfgLimit").value) || 0,
+        deposit_fee_percent: parseFloat($("#cfgFee").value) || 0,
+        treasury_hold_percent: parseFloat($("#cfgHold").value) || 0,
+        tron_network: $("#cfgNet").value,
+        usdt_contract: $("#cfgContract").value.trim(),
+        sweep_min_usdt: parseFloat($("#cfgSweep").value) || 0,
+        gas_fund_trx: parseFloat($("#cfgGas").value) || 0,
+        disbursement_float_usdt: parseFloat($("#cfgFloat").value) || 0,
+        poll_interval_seconds: parseInt($("#cfgPoll").value, 10) || 30,
+      };
+      const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
+      act(() => api("/admin/config", {method:"POST", body}), "Settings saved", renderSettings);
+    };
   }catch(e){ $("#stBody").innerHTML = emptyState(e.message); }
 }
 

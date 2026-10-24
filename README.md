@@ -128,6 +128,22 @@ view other customers, or see the audit log.
   approval; an admin can approve any amount. A staff member's limit is their hard cap for
   sending without approval — set it as high as you need (e.g. lakhs/millions of USDT).
 
+## Admin settings & controls
+
+The **Settings** screen (admin) now exposes the full operational config, editable live:
+
+- **Network & keys** — switch network (mainnet/nile/shasta), rotate the **TronGrid API key**
+  (shown masked; leave blank to keep), change the **USDT contract**, and tune min-sweep,
+  gas top-up, pool float, and the deposit scan interval. Switching to mainnet requires a key.
+- **Policy** — default staff auto-approve limit, treasury hold-back %, and a new **deposit fee %**
+  (shown on deposit receipts as fee + net credited).
+- The wallet **encryption key and app secret are never shown or editable** here (changing the
+  encryption key would make existing wallets unrecoverable) — manage those in server config / KMS.
+
+**User controls** (Staff screen): per-staff auto-approve limits, **enable/disable a user**
+(disabled users are blocked from signing in; you can't disable yourself or the last admin),
+and **reset a user's password**.
+
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).
 - `data/custody.db` — the SQLite database.

@@ -28,7 +28,7 @@ function buildReceipt(m, network) {
   const isTrx = m.token === "TRX";
   const rate = m.usd_rate != null ? Number(m.usd_rate) : 1;
   const amt = Number(m.amount);
-  return {
+  const out = {
     receipt_id: "RCPT-" + String(m.id).padStart(6, "0"),
     kind: m.kind,
     status: m.status,
@@ -43,6 +43,15 @@ function buildReceipt(m, network) {
     tx_hash: m.tx_hash,
     explorer_url: explorerTx(network, m.tx_hash),
   };
+  if (m.kind === "deposit_in" && !isTrx) {
+    const feePct = Number(config.get().deposit_fee_percent || 0);
+    if (feePct > 0) {
+      out.deposit_fee_percent = feePct;
+      out.fee_amount = Number((amt * feePct / 100).toFixed(6));
+      out.net_amount = Number((amt - out.fee_amount).toFixed(6));
+    }
+  }
+  return out;
 }
 const disbOut = (d) => ({ id: d.id, customer_id: d.customer_id, to_address: d.to_address, amount: d.amount, status: d.status, from_wallet_id: d.from_wallet_id, tx_hash: d.tx_hash, created_at: d.created_at });
 const userName = (id) => { if (!id) return null; const u = getDb().prepare("SELECT username FROM users WHERE id=?").get(id); return u ? u.username : null; };
@@ -187,6 +196,30 @@ app.post("/users/:id/limit", currentUser, adminRequired, (req, res) => {
   getDb().prepare("UPDATE users SET auto_approve_limit=? WHERE id=?").run(val, u.id);
   svc.audit(req.user.id, "set_staff_limit", `staff #${u.id} -> ${val === null ? "default" : val}`, ip(req));
   res.json(userOut(getDb().prepare("SELECT * FROM users WHERE id=?").get(u.id)));
+});
+
+app.post("/users/:id/active", currentUser, adminRequired, (req, res) => {
+  const u = getDb().prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ detail: "user not found" });
+  if (u.id === req.user.id) return res.status(400).json({ detail: "you cannot change your own status" });
+  const active = req.body && req.body.active ? 1 : 0;
+  if (!active && u.role === "admin") {
+    const admins = getDb().prepare("SELECT COUNT(*) c FROM users WHERE role='admin' AND is_active=1").get().c;
+    if (admins <= 1) return res.status(400).json({ detail: "cannot disable the last active admin" });
+  }
+  getDb().prepare("UPDATE users SET is_active=? WHERE id=?").run(active, u.id);
+  svc.audit(req.user.id, active ? "enable_user" : "disable_user", u.username, ip(req));
+  res.json(userOut(getDb().prepare("SELECT * FROM users WHERE id=?").get(u.id)));
+});
+
+app.post("/users/:id/password", currentUser, adminRequired, (req, res) => {
+  const u = getDb().prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ detail: "user not found" });
+  const pw = String((req.body || {}).password || "");
+  if (pw.length < 8) return res.status(400).json({ detail: "password must be at least 8 characters" });
+  getDb().prepare("UPDATE users SET password_hash=? WHERE id=?").run(sec.hashPassword(pw), u.id);
+  svc.audit(req.user.id, "reset_password", u.username, ip(req));
+  res.json({ ok: true });
 });
 
 // ---------------- wallets ----------------
@@ -425,6 +458,49 @@ app.post("/settings", currentUser, adminRequired, (req, res) => {
   config.save(c);
   svc.audit(req.user.id, "update_settings", JSON.stringify(settingsOut()), ip(req));
   res.json(settingsOut());
+});
+
+// Full operational config — admin only. The API key is returned masked; the
+// wallet encryption key and app secret are never exposed or editable here.
+function maskKey(k) { if (!k) return ""; return k.length <= 8 ? "••••" : k.slice(0, 4) + "…" + k.slice(-4); }
+app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
+  const c = config.get();
+  res.json({
+    tron_network: c.tron_network,
+    usdt_contract: c.usdt_contract,
+    trongrid_api_key_masked: maskKey(c.trongrid_api_key || ""),
+    has_trongrid_key: !!c.trongrid_api_key,
+    sweep_min_usdt: Number(c.sweep_min_usdt || 0),
+    gas_fund_trx: Number(c.gas_fund_trx || 0),
+    disbursement_float_usdt: Number(c.disbursement_float_usdt || 0),
+    poll_interval_seconds: Number(c.poll_interval_seconds || 30),
+    treasury_hold_percent: Number(c.treasury_hold_percent != null ? c.treasury_hold_percent : 10),
+    staff_auto_approve_limit: Number(c.staff_auto_approve_limit || 0),
+    deposit_fee_percent: Number(c.deposit_fee_percent || 0),
+    setup_at: c.setup_at || null,
+  });
+});
+app.post("/admin/config", currentUser, adminRequired, (req, res) => {
+  const c = { ...config.get() };
+  const b = req.body || {};
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : null; };
+  if (b.tron_network !== undefined) {
+    if (!["mainnet", "nile", "shasta"].includes(b.tron_network)) return res.status(400).json({ detail: "invalid network" });
+    c.tron_network = b.tron_network;
+  }
+  if (b.usdt_contract !== undefined) { const v = String(b.usdt_contract || "").trim(); if (!v) return res.status(400).json({ detail: "contract required" }); c.usdt_contract = v; }
+  if (b.trongrid_api_key !== undefined) { const v = String(b.trongrid_api_key || "").trim(); if (v) c.trongrid_api_key = v; } // blank = keep existing
+  for (const k of ["sweep_min_usdt", "gas_fund_trx", "disbursement_float_usdt", "poll_interval_seconds", "treasury_hold_percent", "staff_auto_approve_limit", "deposit_fee_percent"]) {
+    if (b[k] !== undefined) {
+      const n = num(b[k]); if (n === null) return res.status(400).json({ detail: "invalid " + k });
+      if ((k === "treasury_hold_percent" || k === "deposit_fee_percent") && n > 100) return res.status(400).json({ detail: k + " must be 0–100" });
+      c[k] = n;
+    }
+  }
+  if (c.tron_network === "mainnet" && !c.trongrid_api_key) return res.status(400).json({ detail: "mainnet requires a TronGrid API key" });
+  config.save(c);
+  svc.audit(req.user.id, "update_config", `network=${c.tron_network} contract=${c.usdt_contract}`, ip(req));
+  res.json({ ok: true });
 });
 
 // ---------------- address book (staff/admin) ----------------
