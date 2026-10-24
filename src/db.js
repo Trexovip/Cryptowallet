@@ -15,8 +15,9 @@ function getDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
-      role TEXT NOT NULL DEFAULT 'staff',
+      role TEXT NOT NULL DEFAULT 'staff',   -- admin | staff | customer
       is_active INTEGER NOT NULL DEFAULT 1,
+      customer_type TEXT,                   -- depositor | remittance (customers only)
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS wallets (
@@ -47,9 +48,19 @@ function getDb() {
       created_at TEXT NOT NULL,
       confirmed_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS customer_whitelist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      address TEXT NOT NULL,
+      label TEXT DEFAULT '',
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by INTEGER,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS disbursement_requests (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       staff_user_id INTEGER NOT NULL,
+      customer_id INTEGER,
       to_address TEXT NOT NULL,
       amount TEXT NOT NULL,
       status TEXT DEFAULT 'pending',
@@ -59,6 +70,14 @@ function getDb() {
       reason TEXT DEFAULT '',
       created_at TEXT NOT NULL,
       resolved_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS address_book (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT DEFAULT '',
+      address TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by INTEGER,
+      created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,9 +89,13 @@ function getDb() {
     );
   `);
 
-  // lightweight migration: add columns that older databases may lack
-  const cols = db.prepare("PRAGMA table_info(movements)").all().map((c) => c.name);
-  if (!cols.includes("usd_rate")) db.exec("ALTER TABLE movements ADD COLUMN usd_rate TEXT");
+  // lightweight migrations: add columns that older databases may lack
+  const mcols = db.prepare("PRAGMA table_info(movements)").all().map((c) => c.name);
+  if (!mcols.includes("usd_rate")) db.exec("ALTER TABLE movements ADD COLUMN usd_rate TEXT");
+  const ucols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!ucols.includes("customer_type")) db.exec("ALTER TABLE users ADD COLUMN customer_type TEXT");
+  const dcols = db.prepare("PRAGMA table_info(disbursement_requests)").all().map((c) => c.name);
+  if (!dcols.includes("customer_id")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN customer_id INTEGER");
 
   return db;
 }

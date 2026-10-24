@@ -80,6 +80,50 @@ approval, printing the dashboard, the movements ledger, and the audit log. The
 simulated chain lives in `demo/mockchain.js`; the application code it exercises is
 the same code that runs in production.
 
+## Customers
+
+Admins and staff can create two kinds of customer (who log in to the same URL and
+get a read-only portal — no payout controls):
+
+- **Depositor** — automatically gets a TRC-20 deposit address. In their portal they
+  see the address (with QR) and their full deposit history. Deposits sweep to treasury
+  as usual.
+- **Remittance** — has one or more **whitelisted** payout addresses. Staff send USDT
+  only to those addresses (a payout to a non-whitelisted address is rejected); an admin
+  approves it like any other payout. In their portal the customer sees the funds they've
+  received — what, when, and how much — and can open/print a receipt for each.
+
+Manage all of this under **Customers** in the console: create customers, add/remove
+whitelist addresses, and send a customer payout. Customers cannot create payouts,
+view other customers, or see the audit log.
+
+## Transaction history
+
+- **Admin** gets a **Transactions** screen showing every value movement (deposits, sweeps,
+  pool top-ups, payouts, treasury sends) with date, type, from/to, amount in USDT and USD,
+  status, and who initiated it — plus a **filter by user** (any staff member or customer).
+- **Per-user drill-down**: a Transactions button on each row in the Staff and Customers lists
+  jumps straight to that person's history.
+- **Staff** see the same screen scoped to their own activity only. **Customers** see their own
+  history in their portal (deposits for depositors, received transfers for remittance).
+- Every row opens a printable receipt.
+
+## Address book, treasury & approvals
+
+- **Address book** — save labelled destination addresses (Address book screen). Each has
+  a copy button and a QR code, and saved addresses appear as suggestions when staff fill
+  in a payout recipient.
+- **Treasury distribution** — on the Wallets screen, admins can **Distribute to pool**,
+  which splits the treasury's USDT evenly across all pool wallets while holding back a
+  configurable percentage (default 10%) in treasury.
+- **Admin send (choose the source)** — admins can send USDT to any address, choosing the
+  source: the **treasury** or any **pool (normal) wallet**. It goes out immediately with no
+  approval step. Staff can never send from the treasury or use this direct send — staff move
+  funds only through the normal payout flow (subject to the auto-approve limit).
+- **Per-transaction auto-approve limit** — on the Settings screen, an admin sets a USDT
+  limit. Staff payouts at or below the limit are sent immediately; anything above it stays
+  pending until an admin approves it. A per-payout hard ceiling is also configurable.
+
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).
 - `data/custody.db` — the SQLite database.

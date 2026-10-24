@@ -117,6 +117,52 @@ async function executeDisbursement(req, approverId) {
   return db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.id);
 }
 
+// Distribute treasury USDT across the disbursement pool, holding back holdPct%.
+async function distributeTreasury(holdPct) {
+  const db = getDb();
+  const treasury = getTreasury();
+  if (!treasury) throw new Error("no treasury wallet");
+  const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all();
+  if (!pool.length) throw new Error("no disbursement pool wallets to distribute to");
+
+  const bal = await chain.usdtBalance(treasury.address);
+  const hold = bal * (Number(holdPct) / 100);
+  const distributable = bal - hold;
+  let per = Math.floor((distributable / pool.length) * 1e6) / 1e6; // round down to 6dp
+  if (!(per > 0)) return { balance: bal, held: bal, distributed: 0, per_wallet: 0, count: pool.length };
+
+  const rate = await getUsdRate();
+  const tpk = sec.decryptSecret(treasury.enc_privkey);
+  let distributed = 0;
+  for (const w of pool) {
+    const tx = await chain.sendUsdt(tpk, w.address, per);
+    record("topup", treasury.address, w.address, per, tx, { walletId: w.id, note: `treasury split (hold ${holdPct}%)`, usdRate: rate });
+    distributed += per;
+  }
+  return { balance: bal, held: bal - distributed, distributed, per_wallet: per, count: pool.length };
+}
+
+// Admin-only: send USDT from treasury to any address.
+async function treasurySend(toAddress, amount) {
+  const treasury = getTreasury();
+  if (!treasury) throw new Error("no treasury wallet");
+  return adminSendFrom(treasury, toAddress, amount);
+}
+
+// Admin-only: send USDT from a chosen source wallet (treasury or a pool wallet).
+async function adminSendFrom(sourceWallet, toAddress, amount) {
+  const bal = await chain.usdtBalance(sourceWallet.address);
+  if (Number(amount) > bal + 1e-9) throw new Error("amount exceeds source wallet balance");
+  const rate = await getUsdRate();
+  const pk = sec.decryptSecret(sourceWallet.enc_privkey);
+  const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
+  const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
+  record(kind, sourceWallet.address, toAddress, Number(amount), tx,
+    { walletId: sourceWallet.id, note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
+  return { tx, kind };
+}
+
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
+  distributeTreasury, treasurySend, adminSendFrom,
 };

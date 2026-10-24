@@ -17,6 +17,8 @@ const DEFAULTS = {
   max_disburse_usdt: 2000.0,
   poll_interval_seconds: 30,
   access_token_minutes: 60,
+  staff_auto_approve_limit: 0,   // staff payouts <= this (USDT) skip approval; 0 = always require approval
+  treasury_hold_percent: 10,     // % of treasury kept back when distributing to the pool
 };
 
 let cfg = null;

@@ -39,7 +39,7 @@ function statusBadge(s){
 }
 const KIND_LABEL = {
   deposit_in:"Deposit in", gas_fund:"Gas funding", sweep:"Sweep → treasury",
-  topup:"Treasury → pool", disburse_out:"Payout"
+  topup:"Treasury → pool", disburse_out:"Payout", treasury_out:"Treasury send"
 };
 
 /* ---------- API ---------- */
@@ -98,16 +98,25 @@ function doLogout(){
 /* ---------- nav ---------- */
 const NAV = {
   admin: [
-    ["dashboard","Dashboard","◧"], ["wallets","Wallets","▦"],
-    ["payouts","Payouts","↗"], ["staff","Staff","☷"], ["audit","Audit log","❏"]
+    ["dashboard","Dashboard","◧"], ["wallets","Wallets","▦"], ["payouts","Payouts","↗"],
+    ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"],
+    ["staff","Staff","☷"], ["settings","Settings","⚙"], ["audit","Audit log","❏"]
   ],
   staff: [
-    ["dashboard","Dashboard","◧"], ["wallets","Receive","▦"], ["payouts","Payouts","↗"]
+    ["dashboard","Dashboard","◧"], ["wallets","Receive","▦"], ["payouts","Payouts","↗"],
+    ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"]
+  ],
+  customer_depositor: [
+    ["dashboard","Overview","◧"], ["wallets","Deposit address","▦"], ["payouts","Deposits","↙"]
+  ],
+  customer_remittance: [
+    ["dashboard","Overview","◧"], ["wallets","Whitelist","▦"], ["payouts","Transfers","↙"]
   ]
 };
+const navKey = () => state.user.role === "customer" ? "customer_" + state.user.customer_type : state.user.role;
 function buildNav(){
   const nav = $("#nav"); nav.innerHTML = "";
-  NAV[state.user.role].forEach(([key, label, ic]) => {
+  (NAV[navKey()] || []).forEach(([key, label, ic]) => {
     const a = document.createElement("a");
     a.dataset.sec = key; a.innerHTML = `<span class="ic">${ic}</span>${label}`;
     a.onclick = () => route(key); nav.appendChild(a);
@@ -117,8 +126,12 @@ function route(sec){
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.dataset.sec === sec));
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
   $("#sec-" + sec).classList.add("active");
-  const fn = { dashboard:renderDashboard, wallets:renderWallets, payouts:renderPayouts,
-    staff:renderStaff, audit:renderAudit }[sec];
+  const map = state.user.role === "customer"
+    ? { dashboard:renderCustomerDashboard, wallets:renderCustomerAssets, payouts:renderCustomerHistory }
+    : { dashboard:renderDashboard, wallets:renderWallets, payouts:renderPayouts,
+        staff:renderStaff, audit:renderAudit, customers:renderCustomers,
+        addressbook:renderAddressBook, settings:renderSettings, transactions:renderTransactions };
+  const fn = map[sec];
   if (fn) fn();
 }
 
@@ -212,7 +225,9 @@ async function renderWallets(){
     <p>Treasury, gas, disbursement pool, and per-staff deposit addresses.</p></div></div>
     <div id="wBody">Loading…</div>`;
   try{
-    const [wallets, users] = await Promise.all([api("/wallets"), api("/users")]);
+    const [wallets, users, settings, book] = await Promise.all([
+      api("/wallets"), api("/users"), api("/settings"), api("/address-book").catch(() => [])
+    ]);
     const byType = t => wallets.filter(w => w.wtype === t);
     const treasury = byType("treasury")[0];
     const fee = byType("fee")[0];
@@ -230,6 +245,24 @@ async function renderWallets(){
            <span class="hint" id="bal-${treasury.id}"></span></div>`
         : `<span class="hint">Deposits are swept here automatically. Keep the bulk of funds in cold storage.</span>`}
       </div></div>
+
+    ${treasury ? `<div class="panel"><div class="panel-head"><h2>Treasury &amp; admin send <span class="role-pill">admin</span></h2></div><div class="panel-body">
+      <div class="form-actions"><button class="btn btn-accent btn-sm" id="trDistribute">Distribute to pool (keep ${esc(settings.treasury_hold_percent)}%)</button>
+        <span class="hint">Splits treasury USDT evenly across the pool, holding back ${esc(settings.treasury_hold_percent)}%.</span></div>
+      <div style="height:14px"></div>
+      <div class="form-grid">
+        <div class="field"><label>Send from</label><select id="trFrom" class="input">
+          <option value="treasury">Treasury (master)</option>
+          ${pool.map(w => `<option value="${w.id}">Pool wallet #${w.id} — ${esc(shortAddr(w.address))}</option>`).join("")}
+        </select></div>
+        <div class="field"><label>Amount (USDT)</label><input id="trAmt" class="input" type="number" step="0.01" min="0" placeholder="0.00"></div>
+      </div>
+      <div class="field"><label>To address</label>
+        <input id="trTo" class="input mono" placeholder="T… or pick from address book" list="wbList">
+        <datalist id="wbList">${(book || []).map(e => `<option value="${esc(e.address)}">${esc(e.label ? e.label + " — " : "")}${esc(e.address)}</option>`).join("")}</datalist></div>
+      <button class="btn btn-primary" id="trSend">Send</button>
+      <div class="hint" style="margin-top:6px">Admin only — sends immediately, no approval. Staff cannot send from treasury.</div>
+    </div></div>` : ""}
 
     <div class="panel"><div class="panel-head"><h2>Gas wallet (TRX)</h2>
       ${fee ? "" : `<button class="btn btn-primary btn-sm" id="mkFee">Create gas wallet</button>`}</div>
@@ -281,6 +314,24 @@ async function renderWallets(){
 function wireWalletActions(){
   const on = (id, fn) => { const el = $("#"+id); if (el) el.onclick = fn; };
   on("mkTreasury", () => act(() => api("/wallets/treasury", {method:"POST"}), "Treasury created", renderWallets));
+  on("trDistribute", async () => {
+    const ok = await confirmModal({ title:"Distribute treasury to pool", okLabel:"Distribute",
+      bodyHtml:`<p style="margin:0;font-size:14px;color:var(--muted)">This sends treasury USDT out to every pool wallet, keeping the configured hold-back in treasury. Proceed?</p>` });
+    if (ok) act(() => api("/treasury/distribute", {method:"POST"}), "Treasury distributed to pool", renderWallets);
+  });
+  on("trSend", async () => {
+    const from = $("#trFrom").value, to = $("#trTo").value.trim(), amt = parseFloat($("#trAmt").value);
+    if (!to) return toast("Enter a recipient address", true);
+    if (!(amt > 0)) return toast("Enter a valid amount", true);
+    const live = state.network === "mainnet";
+    const srcLabel = from === "treasury" ? "Treasury (master)" : "Pool wallet #" + from;
+    const ok = await confirmModal({ title:"Send USDT", okLabel:"Send",
+      bodyHtml:`<div class="kv"><span class="k">From</span><span class="v">${esc(srcLabel)}</span></div>
+        <div class="kv"><span class="k">Amount</span><span class="v num">${fmtUsdt(amt)} USDT</span></div>
+        <div class="kv"><span class="k">To</span><span class="v mono" style="font-size:12px">${esc(shortAddr(to))}</span></div>
+        ${live?`<div class="live-note">This sends real USDT on mainnet. It cannot be reversed.</div>`:""}` });
+    if (ok) act(() => api("/admin/send", {method:"POST", body:{ from, to_address: to, amount: amt }}), "Sent", renderWallets);
+  });
   on("mkFee", () => act(() => api("/wallets/fee", {method:"POST"}), "Gas wallet created", renderWallets));
   on("mkPool", () => {
     const n = parseInt($("#poolCount").value, 10) || 5;
@@ -337,24 +388,33 @@ async function renderPayouts(){
       : "Request a USDT payout. An admin approves before it is sent."}</p></div></div>
     <div id="pBody">Loading…</div>`;
   try{
-    const reqs = await api("/disbursements");
-    $("#pBody").innerHTML = (state.user.role === "staff" ? staffRequestForm() : "") + payoutTable(reqs);
+    const [reqs, settings, book] = await Promise.all([
+      api("/disbursements"), api("/settings").catch(() => ({})), api("/address-book").catch(() => [])
+    ]);
+    $("#pBody").innerHTML = (state.user.role === "staff" ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
     if (state.user.role === "staff") $("#pSubmit").onclick = submitRequest;
     if (state.user.role === "admin")
       document.querySelectorAll(".approve").forEach(b => b.onclick = () => approve(b.dataset));
   }catch(e){ $("#pBody").innerHTML = emptyState(e.message); }
 }
-function staffRequestForm(){
+function staffRequestForm(settings, book){
+  const limit = settings && settings.staff_auto_approve_limit ? Number(settings.staff_auto_approve_limit) : 0;
+  const hint = limit > 0
+    ? `Payouts up to ${fmtUsdt(limit)} USDT are sent immediately; above that needs admin approval.`
+    : `All payouts require admin approval.`;
+  const opts = (book || []).map(e => `<option value="${esc(e.address)}">${esc(e.label ? e.label + " — " : "")}${esc(e.address)}</option>`).join("");
   return `<div class="panel"><div class="panel-head"><h2>New payout request</h2></div>
     <div class="panel-body"><div class="form-grid">
       <div class="field"><label>Recipient address (TRC-20)</label>
-        <input id="pTo" class="input mono" placeholder="T…"></div>
+        <input id="pTo" class="input mono" placeholder="T… or pick from address book" list="abList">
+        <datalist id="abList">${opts}</datalist></div>
       <div class="field"><label>Amount (USDT)</label>
         <input id="pAmt" class="input" type="number" step="0.000001" min="0" placeholder="0.00"></div>
     </div>
     <div class="field"><label>Reason / reference (optional)</label>
       <input id="pReason" class="input" placeholder="e.g. settlement #4821"></div>
     <button class="btn btn-primary" id="pSubmit">Submit request</button>
+    <div class="hint" style="margin-top:6px">${hint}</div>
     </div></div>`;
 }
 function payoutTable(reqs){
@@ -424,10 +484,11 @@ async function renderStaff(){
       <button class="btn btn-primary" id="nuCreate">Create user</button>
       </div></div>
     <div class="panel"><div class="panel-head"><h2>Users (${users.length})</h2></div>
-      <div class="panel-body flush"><table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th></tr></thead>
+      <div class="panel-body flush"><table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
         <tbody>${users.map(u => `<tr><td>#${u.id}</td><td>${esc(u.username)}</td>
           <td><span class="role">${esc(u.role)}</span></td>
-          <td>${u.is_active ? statusBadge("confirmed").replace("confirmed","active") : statusBadge("failed").replace("failed","disabled")}</td></tr>`).join("")}
+          <td>${u.is_active ? statusBadge("confirmed").replace("confirmed","active") : statusBadge("failed").replace("failed","disabled")}</td>
+          <td class="row-actions"><button class="btn btn-ghost btn-sm" data-usertx="${u.id}">Transactions</button></td></tr>`).join("")}
         </tbody></table></div></div>`;
     $("#nuCreate").onclick = () => {
       const username = $("#nuUser").value.trim(), password = $("#nuPass").value, role = $("#nuRole").value;
@@ -515,6 +576,10 @@ async function openReceipt(key){
 }
 
 document.addEventListener("click", (e) => {
+  const ut = e.target.closest("[data-usertx]");
+  if (ut){ openUserTx(ut.dataset.usertx); return; }
+  const q = e.target.closest("[data-qr]");
+  if (q){ showQr(q.dataset.qr, q.dataset.qrlabel); return; }
   const c = e.target.closest("[data-copy]");
   if (c){ copy(c.dataset.copy); return; }
   const rc = e.target.closest("[data-receipt]");
@@ -524,6 +589,271 @@ document.addEventListener("click", (e) => {
 });
 
 /* ---------- boot ---------- */
+/* ---------- customers management (admin/staff) ---------- */
+let selectedCustomer = null;
+async function renderCustomers(){
+  const sec = $("#sec-customers");
+  sec.innerHTML = `<div class="page-head"><h1>Customers</h1><p>Create depositor and remittance customers, manage whitelists, and send customer payouts.</p></div><div id="cBody">Loading…</div>`;
+  try{
+    const list = await api("/customers");
+    $("#cBody").innerHTML = customerForm() + customerTable(list) + `<div id="custDetail"></div>`;
+    wireCustomerForm();
+    document.querySelectorAll(".manage-cust").forEach(b => b.onclick = () => openCustomer(Number(b.dataset.id)));
+    if (selectedCustomer && list.some(c => c.id === selectedCustomer)) openCustomer(selectedCustomer);
+  }catch(e){ $("#cBody").innerHTML = emptyState(e.message); }
+}
+function customerForm(){
+  return `<div class="panel"><div class="panel-head"><h2>Add customer</h2></div><div class="panel-body">
+    <div class="form-grid">
+      <div class="field"><label>Type</label><select id="cType" class="input">
+        <option value="depositor">Depositor — gets a deposit address</option>
+        <option value="remittance">Remittance — we pay out to their whitelisted address</option></select></div>
+      <div class="field"><label>Username</label><input id="cUser" class="input"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Temporary password</label><input id="cPass" class="input" type="text" placeholder="min 8 characters"></div>
+      <div class="field"><label>Label (optional)</label><input id="cLabel" class="input" placeholder="name / reference"></div>
+    </div>
+    <div class="field" id="cWlField" style="display:none"><label>Whitelisted payout address (TRC-20)</label><input id="cWl" class="input mono" placeholder="T…"></div>
+    <button class="btn btn-primary" id="cCreate">Create customer</button></div></div>`;
+}
+function wireCustomerForm(){
+  const typeSel = $("#cType");
+  const toggle = () => { $("#cWlField").style.display = typeSel.value === "remittance" ? "" : "none"; };
+  typeSel.onchange = toggle; toggle();
+  $("#cCreate").onclick = () => {
+    const body = { username: $("#cUser").value.trim(), password: $("#cPass").value, customer_type: typeSel.value, label: $("#cLabel").value.trim() };
+    if (typeSel.value === "remittance") body.whitelist_address = $("#cWl").value.trim();
+    if (body.username.length < 3) return toast("Username too short", true);
+    if (body.password.length < 8) return toast("Password must be at least 8 characters", true);
+    act(() => api("/customers", { method:"POST", body }), "Customer created", renderCustomers);
+  };
+}
+function customerTable(list){
+  const rows = (list||[]).map(c => `<tr>
+    <td>#${c.id}</td><td>${esc(c.username)}</td>
+    <td><span class="role-pill">${esc(c.customer_type)}</span></td>
+    <td>${c.customer_type === "depositor" ? addrHtml(c.deposit_address) : (c.whitelist_count + " address" + (c.whitelist_count === 1 ? "" : "es"))}</td>
+    <td class="row-actions"><button class="btn btn-ghost btn-sm" data-usertx="${c.id}">Transactions</button><button class="btn btn-ghost btn-sm manage-cust" data-id="${c.id}">Manage</button></td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h2>Customers <span class="cnt">${(list||[]).length}</span></h2></div>
+    <div class="panel-body flush">${rows ? `<table><thead><tr><th>ID</th><th>Username</th><th>Type</th><th>Deposit / whitelist</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : emptyState("No customers yet.")}</div></div>`;
+}
+async function openCustomer(id){
+  selectedCustomer = id;
+  const d = $("#custDetail"); d.innerHTML = "Loading…";
+  try{
+    const c = await api("/customers/" + id);
+    if (c.customer_type === "depositor"){
+      d.innerHTML = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · depositor</h2></div><div class="panel-body">
+        ${c.deposit_addresses.map(w => `<div class="recv-addr">${esc(w.address)}</div>`).join("") || emptyState("No deposit address.")}
+        <div class="hint" style="margin-top:8px">Deposits here settle to treasury automatically; the customer sees them in their portal.</div></div></div>`;
+      return;
+    }
+    const wl = c.whitelist.map(w => `<tr><td>${addrHtml(w.address)}</td><td>${esc(w.label||"—")}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm wl-del" data-wid="${w.id}">Remove</button></td></tr>`).join("");
+    d.innerHTML = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · remittance</h2></div>
+      <div class="panel-body flush">${c.whitelist.length ? `<table><thead><tr><th>Whitelisted address</th><th>Label</th><th></th></tr></thead><tbody>${wl}</tbody></table>` : emptyState("No whitelisted addresses yet.")}</div>
+      <div class="panel-body"><div class="form-grid">
+        <div class="field"><label>Add whitelisted address</label><input id="wlAddr" class="input mono" placeholder="T…"></div>
+        <div class="field"><label>Label</label><input id="wlLabel" class="input" placeholder="optional"></div>
+      </div><button class="btn btn-ghost btn-sm" id="wlAdd">Add address</button></div></div>
+      <div class="panel"><div class="panel-head"><h2>Send payout to ${esc(c.username)}</h2></div><div class="panel-body">
+      ${c.whitelist.length ? `<div class="form-grid">
+        <div class="field"><label>Amount (USDT)</label><input id="poAmt" class="input" type="number" step="0.01" min="0" placeholder="0.00"></div>
+        <div class="field"><label>To whitelisted address</label><select id="poAddr" class="input">${c.whitelist.map(w => `<option value="${esc(w.address)}">${esc(w.label ? w.label + " — " : "")}${esc(shortAddr(w.address))}</option>`).join("")}</select></div>
+      </div>
+      <div class="field"><label>Reason / reference (optional)</label><input id="poReason" class="input" placeholder="e.g. invoice #123"></div>
+      <button class="btn btn-primary" id="poSend">Create payout</button>
+      <div class="hint" style="margin-top:6px">Creates a payout to a whitelisted address; an admin approves it in Payouts.</div>`
+      : emptyState("Add a whitelisted address before sending a payout.")}
+      </div></div>`;
+    document.querySelectorAll(".wl-del").forEach(b => b.onclick = () =>
+      act(() => api("/customers/" + id + "/whitelist/" + b.dataset.wid, { method:"DELETE" }), "Address removed", () => openCustomer(id)));
+    const add = $("#wlAdd");
+    if (add) add.onclick = () => { const address = $("#wlAddr").value.trim(); if (!address) return toast("Enter an address", true);
+      act(() => api("/customers/" + id + "/whitelist", { method:"POST", body:{ address, label: $("#wlLabel").value.trim() } }), "Address whitelisted", () => openCustomer(id)); };
+    const send = $("#poSend");
+    if (send) send.onclick = () => { const amt = parseFloat($("#poAmt").value); if (!(amt > 0)) return toast("Enter a valid amount", true);
+      act(() => api("/disbursements", { method:"POST", body:{ customer_id: id, amount: amt, to_address: $("#poAddr").value, reason: $("#poReason").value.trim() } }), "Payout created — pending admin approval", () => openCustomer(id)); };
+  }catch(e){ d.innerHTML = emptyState(e.message); }
+}
+
+/* ---------- customer portal (read-only) ---------- */
+async function renderCustomerDashboard(){
+  const sec = $("#sec-dashboard");
+  sec.innerHTML = `<div class="page-head"><h1>Overview</h1><p>Your account summary.</p></div><div id="cdBody">Loading…</div>`;
+  try{
+    const d = await api("/customer/dashboard"); setNetwork(d.network);
+    if (d.customer_type === "depositor"){
+      $("#cdBody").innerHTML = `<div class="readouts"><div class="readout"><div class="label">Total received</div>
+        <div class="value lead num">${fmtUsdt(d.total_received)}<span class="unit">USDT</span></div>
+        <div class="foot">${d.deposit_addresses.length} deposit address${d.deposit_addresses.length === 1 ? "" : "es"}</div></div></div>
+        ${depositsPanel(d.recent, "Recent deposits")}`;
+    } else {
+      $("#cdBody").innerHTML = `<div class="readouts"><div class="readout"><div class="label">Total received</div>
+        <div class="value lead num">${fmtUsdt(d.total_received)}<span class="unit">USDT</span></div>
+        <div class="foot">${d.whitelist.length} whitelisted address${d.whitelist.length === 1 ? "" : "es"}</div></div></div>
+        ${transfersPanel(d.recent, "Recent transfers")}`;
+    }
+  }catch(e){ $("#cdBody").innerHTML = emptyState(e.message); }
+}
+async function renderCustomerAssets(){
+  const sec = $("#sec-wallets");
+  try{
+    const me = await api("/customer/me");
+    if (me.customer_type === "depositor"){
+      sec.innerHTML = `<div class="page-head"><h1>Your deposit address</h1><p>Send TRC-20 USDT here. Deposits are credited automatically.</p></div>
+        ${me.deposit_addresses.map((w,i) => `<div class="panel"><div class="panel-head"><h2>${esc(w.label||"Deposit address "+(i+1))}</h2></div>
+          <div class="panel-body"><div class="qr-wrap"><div class="qr-box" id="cqr-${w.id}"></div>
+          <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
+          <div class="recv-addr">${esc(w.address)}</div>
+          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
+      me.deposit_addresses.forEach(w => { try { new QRCode($("#cqr-" + w.id), { text:w.address, width:132, height:132, correctLevel: QRCode.CorrectLevel.M }); } catch(e){} });
+    } else {
+      sec.innerHTML = `<div class="page-head"><h1>Your whitelisted addresses</h1><p>Payouts can only be sent to these approved addresses. Contact support to change them.</p></div>
+        <div class="panel"><div class="panel-body flush">${me.whitelist.length ? `<table><thead><tr><th>Address</th><th>Label</th></tr></thead><tbody>
+        ${me.whitelist.map(w => `<tr><td>${addrHtml(w.address)}</td><td>${esc(w.label||"—")}</td></tr>`).join("")}</tbody></table>` : emptyState("No whitelisted addresses yet.")}</div></div>`;
+    }
+  }catch(e){ sec.innerHTML = emptyState(e.message); }
+}
+async function renderCustomerHistory(){
+  const sec = $("#sec-payouts");
+  try{
+    if (state.user.customer_type === "depositor"){
+      sec.innerHTML = `<div class="page-head"><h1>Deposits</h1><p>Funds received at your deposit address.</p></div>${depositsPanel(await api("/customer/deposits"), "All deposits")}`;
+    } else {
+      sec.innerHTML = `<div class="page-head"><h1>Transfers</h1><p>USDT we have sent to your whitelisted address.</p></div>${transfersPanel(await api("/customer/transfers"), "All transfers")}`;
+    }
+  }catch(e){ sec.innerHTML = emptyState(e.message); }
+}
+function depositsPanel(rows, title){
+  const body = (rows||[]).map(m => `<tr>
+    <td>${esc((m.created_at||"").replace("T"," ").slice(0,16))}</td>
+    <td>${addrHtml(m.from_address)}</td>
+    <td class="amt num">${fmtUsdt(m.amount)} ${esc(m.token)}</td>
+    <td>${statusBadge(m.status)}</td>
+    <td class="row-actions"><button class="btn btn-ghost btn-sm" data-receipt="${m.id}">Receipt</button></td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div><div class="panel-body flush">
+    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>From</th><th class="amt">Amount</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No deposits yet.")}</div></div>`;
+}
+function transfersPanel(rows, title){
+  const body = (rows||[]).map(r => `<tr>
+    <td>${esc((r.created_at||"").replace("T"," ").slice(0,16))}</td>
+    <td>${addrHtml(r.to_address)}</td>
+    <td class="amt num">${fmtUsdt(r.amount)} USDT</td>
+    <td>${statusBadge(r.status)}</td>
+    <td class="row-actions">${r.tx_hash ? `<button class="btn btn-ghost btn-sm" data-receipt-tx="${esc(r.tx_hash)}">Receipt</button>` : "—"}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div><div class="panel-body flush">
+    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>To</th><th class="amt">Amount</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No transfers yet.")}</div></div>`;
+}
+
+/* ---------- transactions (admin: all + filter by user; staff: own) ---------- */
+let txFilterUser = null;
+function openUserTx(id){ txFilterUser = String(id); route("transactions"); }
+async function renderTransactions(){
+  const sec = $("#sec-transactions");
+  const isAdmin = state.user.role === "admin";
+  sec.innerHTML = `<div class="page-head"><h1>Transactions</h1><p>Full history of value movements${isAdmin ? " — filter by any user." : " you initiated."}</p></div><div id="txBody">Loading…</div>`;
+  try{
+    let users = [], customers = [];
+    if (isAdmin){
+      users = await api("/users");
+      try { customers = await api("/customers"); } catch(e){}
+    }
+    const rows = await api("/transactions" + (txFilterUser ? "?user_id=" + encodeURIComponent(txFilterUser) : ""));
+    const filter = isAdmin ? `<div class="panel"><div class="panel-body"><div class="field" style="margin:0">
+      <label>Filter by user</label>
+      <select id="txUser" class="input"><option value="">Everyone</option>
+        <optgroup label="Staff / admin">${users.map(u => `<option value="${u.id}"${String(txFilterUser)===String(u.id)?" selected":""}>${esc(u.username)} (${esc(u.role)})</option>`).join("")}</optgroup>
+        ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="${c.id}"${String(txFilterUser)===String(c.id)?" selected":""}>${esc(c.username)} (${esc(c.customer_type)})</option>`).join("")}</optgroup>` : ""}
+      </select></div></div></div>` : "";
+    $("#txBody").innerHTML = filter + txTable(rows, isAdmin);
+    if (isAdmin) $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; renderTransactions(); };
+  }catch(e){ $("#txBody").innerHTML = emptyState(e.message); }
+}
+function txTable(rows, showWho){
+  const body = (rows||[]).map(m => `<tr>
+    <td>${esc((m.created_at||"").replace("T"," ").slice(0,16))}</td>
+    <td><span class="kind">${esc(KIND_LABEL[m.kind]||m.kind)}</span></td>
+    <td>${addrHtml(m.from_address)}</td><td>${addrHtml(m.to_address)}</td>
+    <td class="amt num">${fmtUsdt(m.amount)} ${esc(m.token)}${m.amount_usd!=null?`<div class="r-sub">$${fmtUsdt(m.amount_usd)}</div>`:""}</td>
+    <td>${statusBadge(m.status)}</td>
+    ${showWho?`<td>${esc(m.initiated_by_name||"—")}</td>`:""}
+    <td class="row-actions"><button class="btn btn-ghost btn-sm" data-receipt="${m.id}">Receipt</button></td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h2>History <span class="cnt">${(rows||[]).length}</span></h2></div>
+    <div class="panel-body flush">${body ? `<div class="tbl-wrap"><table><thead><tr><th>Date (UTC)</th><th>Type</th><th>From</th><th>To</th><th class="amt">Amount</th><th>Status</th>${showWho?"<th>By</th>":""}<th></th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState("No transactions.")}</div></div>`;
+}
+
+/* ---------- address book (admin/staff) ---------- */
+async function renderAddressBook(){
+  const sec = $("#sec-addressbook");
+  sec.innerHTML = `<div class="page-head"><h1>Address book</h1><p>Saved destination addresses with QR codes. Pick these when sending payouts.</p></div><div id="abBody">Loading…</div>`;
+  try{
+    const list = await api("/address-book");
+    const rows = list.map(e => `<tr><td>${esc(e.label||"—")}</td><td>${addrHtml(e.address)}</td>
+      <td class="row-actions"><button class="btn btn-ghost btn-sm" data-qr="${esc(e.address)}" data-qrlabel="${esc(e.label||"")}">QR</button>
+      <button class="btn btn-ghost btn-sm ab-del" data-id="${e.id}">Remove</button></td></tr>`).join("");
+    $("#abBody").innerHTML = `
+      <div class="panel"><div class="panel-head"><h2>Add address</h2></div><div class="panel-body">
+        <div class="form-grid"><div class="field"><label>Label</label><input id="abLabel" class="input" placeholder="e.g. Vendor A"></div>
+        <div class="field"><label>Address (TRC-20)</label><input id="abAddr" class="input mono" placeholder="T…"></div></div>
+        <button class="btn btn-primary" id="abAdd">Save address</button></div></div>
+      <div class="panel"><div class="panel-head"><h2>Saved addresses <span class="cnt">${list.length}</span></h2></div>
+        <div class="panel-body flush">${rows ? `<table><thead><tr><th>Label</th><th>Address</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : emptyState("No saved addresses yet.")}</div></div>`;
+    $("#abAdd").onclick = () => { const address = $("#abAddr").value.trim(); if (!address) return toast("Enter an address", true);
+      act(() => api("/address-book", {method:"POST", body:{ address, label: $("#abLabel").value.trim() }}), "Address saved", renderAddressBook); };
+    document.querySelectorAll(".ab-del").forEach(b => b.onclick = () => act(() => api("/address-book/" + b.dataset.id, {method:"DELETE"}), "Removed", renderAddressBook));
+  }catch(e){ $("#abBody").innerHTML = emptyState(e.message); }
+}
+
+/* ---------- settings (admin) ---------- */
+async function renderSettings(){
+  const sec = $("#sec-settings");
+  sec.innerHTML = `<div class="page-head"><h1>Settings</h1><p>Approval limits and treasury policy.</p></div><div id="stBody">Loading…</div>`;
+  try{
+    const s = await api("/settings");
+    $("#stBody").innerHTML = `<div class="panel"><div class="panel-head"><h2>Payout policy</h2></div><div class="panel-body">
+      <div class="field"><label>Staff auto-approve limit (USDT, per transaction)</label>
+        <input id="stLimit" class="input" type="number" step="0.01" min="0" value="${esc(s.staff_auto_approve_limit)}">
+        <div class="hint">Staff payouts at or below this amount go out without approval. 0 = every staff payout needs admin approval.</div></div>
+      <div class="field"><label>Per-payout ceiling (USDT)</label>
+        <input id="stMax" class="input" type="number" step="0.01" min="0" value="${esc(s.max_disburse_usdt)}">
+        <div class="hint">Hard maximum for any single payout.</div></div>
+      <div class="field"><label>Treasury hold-back when distributing (%)</label>
+        <input id="stHold" class="input" type="number" step="1" min="0" max="100" value="${esc(s.treasury_hold_percent)}">
+        <div class="hint">Percentage kept in treasury when you distribute to the pool.</div></div>
+      <button class="btn btn-primary" id="stSave">Save settings</button></div></div>`;
+    $("#stSave").onclick = () => act(() => api("/settings", {method:"POST", body:{
+      staff_auto_approve_limit: parseFloat($("#stLimit").value) || 0,
+      max_disburse_usdt: parseFloat($("#stMax").value) || 0,
+      treasury_hold_percent: parseFloat($("#stHold").value) || 0
+    }}), "Settings saved", renderSettings);
+  }catch(e){ $("#stBody").innerHTML = emptyState(e.message); }
+}
+
+/* ---------- QR modal ---------- */
+function ensureQrModal(){
+  if ($("#qrBack")) return;
+  const d = document.createElement("div");
+  d.id = "qrBack"; d.className = "modal-back";
+  d.innerHTML = `<div class="modal" style="max-width:300px">
+    <div class="modal-head"><h3 id="qrTitle">Address</h3></div>
+    <div class="modal-body" style="text-align:center"><div id="qrBox" class="qr-box" style="display:inline-block"></div>
+      <div class="recv-addr" id="qrAddr" style="margin-top:12px"></div></div>
+    <div class="modal-foot"><button class="btn btn-ghost" id="qrClose">Close</button></div></div>`;
+  document.body.appendChild(d);
+  $("#qrClose").onclick = () => d.classList.remove("show");
+  d.addEventListener("click", (e) => { if (e.target === d) d.classList.remove("show"); });
+}
+function showQr(address, label){
+  ensureQrModal();
+  $("#qrTitle").textContent = label || "Address";
+  $("#qrAddr").textContent = address;
+  const box = $("#qrBox"); box.innerHTML = "";
+  try { new QRCode(box, { text: address, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M }); } catch(e){}
+  $("#qrBack").classList.add("show");
+}
+
 async function boot(){
   const me = await api("/users/me");
   state.user = me;
