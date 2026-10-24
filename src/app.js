@@ -277,7 +277,7 @@ app.post("/disbursements", currentUser, staffOrAdmin, wrap(async (req, res) => {
   const auto = isAdmin || (staffLimit > 0 && Number(amount) <= staffLimit);
   if (auto) {
     try {
-      const updated = await svc.executeDisbursement(reqRow, req.user.id);
+      const updated = await svc.executeDisbursement(reqRow, req.user.id, isAdmin ? null : staffLimit);
       svc.audit(req.user.id, isAdmin ? "disbursement_executed" : "disbursement_auto_approved",
         `req#${updated.id}${isAdmin ? " (admin)" : " <= limit " + staffLimit}`, ip(req));
       return res.json(disbOut(updated));

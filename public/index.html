@@ -2,8 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>USDT Custody Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script>try{var _t=localStorage.getItem('cc_theme');if(_t)document.documentElement.setAttribute('data-theme',_t);}catch(e){}</script>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -42,6 +46,7 @@
     <div class="who">
       <span id="whoName">—</span>
       <span id="whoRole" class="role">—</span>
+      <button id="themeBtn" class="btn btn-ghost btn-sm" title="Toggle light / dark" aria-label="Toggle theme">◐</button>
       <button id="logoutBtn" class="btn btn-ghost btn-sm">Log out</button>
     </div>
   </header>

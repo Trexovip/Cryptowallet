@@ -125,7 +125,8 @@ view other customers, or see the audit log.
 - **Auto-approve limits, global and per-staff** — Settings holds a *default* staff limit;
   each staff member can be given their own limit on the Staff screen (blank = use the default).
   A staff payout at or below their limit is sent immediately; above it, it waits for admin
-  approval. A per-payout hard ceiling is also configurable.
+  approval; an admin can approve any amount. A staff member's limit is their hard cap for
+  sending without approval — set it as high as you need (e.g. lakhs/millions of USDT).
 
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).

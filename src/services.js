@@ -99,11 +99,11 @@ async function ensurePoolFunded(need, usdRate = null) {
   return target;
 }
 
-async function executeDisbursement(req, approverId) {
+async function executeDisbursement(req, approverId, cap = null) {
   const db = getDb();
   const amount = Number(req.amount);
-  if (amount > Number(get().max_disburse_usdt))
-    throw new Error(`amount exceeds per-payout ceiling of ${get().max_disburse_usdt}`);
+  if (cap != null && amount > Number(cap))
+    throw new Error(`amount exceeds the limit of ${cap}`);
 
   const rate = await getUsdRate();
   const wallet = await ensurePoolFunded(amount, rate);

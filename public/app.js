@@ -834,16 +834,12 @@ async function renderSettings(){
       <div class="field"><label>Default staff auto-approve limit (USDT, per transaction)</label>
         <input id="stLimit" class="input" type="number" step="0.01" min="0" value="${esc(s.staff_auto_approve_limit)}">
         <div class="hint">Applies to staff without their own limit. Set per-staff limits on the Staff screen. 0 = require approval for every staff payout.</div></div>
-      <div class="field"><label>Per-payout ceiling (USDT)</label>
-        <input id="stMax" class="input" type="number" step="0.01" min="0" value="${esc(s.max_disburse_usdt)}">
-        <div class="hint">Hard maximum for any single payout.</div></div>
       <div class="field"><label>Treasury hold-back when distributing (%)</label>
         <input id="stHold" class="input" type="number" step="1" min="0" max="100" value="${esc(s.treasury_hold_percent)}">
         <div class="hint">Percentage kept in treasury when you distribute to the pool.</div></div>
       <button class="btn btn-primary" id="stSave">Save settings</button></div></div>`;
     $("#stSave").onclick = () => act(() => api("/settings", {method:"POST", body:{
       staff_auto_approve_limit: parseFloat($("#stLimit").value) || 0,
-      max_disburse_usdt: parseFloat($("#stMax").value) || 0,
       treasury_hold_percent: parseFloat($("#stHold").value) || 0
     }}), "Settings saved", renderSettings);
   }catch(e){ $("#stBody").innerHTML = emptyState(e.message); }
@@ -883,6 +879,13 @@ async function boot(){
 $("#loginBtn").onclick = doLogin;
 $("#lp").addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 $("#logoutBtn").onclick = doLogout;
+if ($("#themeBtn")) $("#themeBtn").onclick = () => {
+  const isDark = (document.documentElement.getAttribute("data-theme")
+    || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")) === "dark";
+  const next = isDark ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("cc_theme", next); } catch (e) {}
+};
 $("#modalBack").addEventListener("click", (e) => { if (e.target === $("#modalBack")) $("#modalBack").classList.remove("show"); });
 
 (async () => {
