@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>USDT Custody Console</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login" class="login-wrap">
+  <div class="login-card">
+    <div class="brand">
+      <div class="brand-mark">₮</div>
+      <div class="brand-name">Custody Console</div>
+    </div>
+    <h1>Sign in</h1>
+    <div class="sub">Treasury &amp; disbursement operations</div>
+    <div class="field">
+      <label for="lu">Username</label>
+      <input id="lu" class="input" autocomplete="username" autofocus>
+    </div>
+    <div class="field">
+      <label for="lp">Password</label>
+      <input id="lp" class="input" type="password" autocomplete="current-password">
+    </div>
+    <button id="loginBtn" class="btn btn-primary" style="width:100%">Sign in</button>
+    <div id="loginErr" class="err-text"></div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">₮</div>
+      <div class="brand-name">Custody Console</div>
+    </div>
+    <span id="netBadge" class="net-badge net-test"><span class="dot"></span><span id="netText">—</span></span>
+    <div class="spacer"></div>
+    <div class="who">
+      <span id="whoName">—</span>
+      <span id="whoRole" class="role">—</span>
+      <button id="logoutBtn" class="btn btn-ghost btn-sm">Log out</button>
+    </div>
+  </header>
+
+  <nav class="nav" id="nav"></nav>
+
+  <main class="main">
+    <section id="sec-dashboard" class="section"></section>
+    <section id="sec-wallets" class="section"></section>
+    <section id="sec-payouts" class="section"></section>
+    <section id="sec-staff" class="section"></section>
+    <section id="sec-audit" class="section"></section>
+  </main>
+</div>
+
+<!-- confirm modal -->
+<div id="modalBack" class="modal-back">
+  <div class="modal">
+    <div class="modal-head"><h3 id="modalTitle">Confirm</h3></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="modalCancel">Cancel</button>
+      <button class="btn btn-accent" id="modalOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/static/qrcode.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

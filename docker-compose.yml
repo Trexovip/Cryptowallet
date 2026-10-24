@@ -1,0 +1,12 @@
+services:
+  custody:
+    build: .
+    container_name: usdt-custody
+    ports:
+      - "8000:8000"          # open http://localhost:8000/
+    volumes:
+      - custody-data:/app/data   # persists config + database across restarts
+    restart: unless-stopped
+
+volumes:
+  custody-data:

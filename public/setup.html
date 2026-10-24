@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up · USDT Custody Console</title>
+<link rel="stylesheet" href="/static/styles.css">
+<style>
+  .setup-wrap{min-height:100%;display:flex;justify-content:center;align-items:flex-start;padding:40px 20px 80px}
+  .setup-card{width:100%;max-width:560px;background:var(--surface);border:1px solid var(--line);
+    border-radius:12px;box-shadow:var(--shadow);padding:30px 32px}
+  .setup-card h1{font-size:22px;margin:14px 0 2px}
+  .setup-card .sub{color:var(--muted);font-size:14px;margin-bottom:22px}
+  .sect{border-top:1px solid var(--line);padding:18px 0 4px;margin-top:4px}
+  .sect:first-of-type{border-top:none;padding-top:0}
+  .sect h2{font-size:15px;margin:0 0 14px}
+  .choice{display:flex;gap:10px;margin-bottom:14px}
+  .opt{flex:1;border:1px solid var(--line-strong);border-radius:var(--radius-sm);padding:12px 14px;cursor:pointer}
+  .opt.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .opt .t{font-weight:600;font-size:14px}
+  .opt .d{font-size:12px;color:var(--muted);margin-top:2px}
+  details{margin:6px 0 2px}
+  details summary{cursor:pointer;font-size:13.5px;color:var(--accent-ink);font-weight:600;margin-bottom:12px}
+  .enc-key{font-family:var(--mono);font-size:13px;word-break:break-all;background:var(--surface-2);
+    border:1px solid var(--line);border-radius:var(--radius-sm);padding:12px}
+  .warn-box{margin:14px 0;padding:12px 14px;background:var(--warn-soft);border:1px solid #F0D9B8;
+    border-radius:var(--radius-sm);color:var(--warn);font-size:13px}
+</style>
+</head>
+<body>
+<div class="setup-wrap">
+  <!-- step 1: the form -->
+  <div class="setup-card" id="form">
+    <div class="brand"><div class="brand-mark">₮</div><div class="brand-name">Custody Console</div></div>
+    <h1>Set up your console</h1>
+    <div class="sub">This runs once. It creates your admin account, connects the wallet network, and generates your encryption key.</div>
+
+    <div class="sect">
+      <h2>Admin account</h2>
+      <div class="form-grid">
+        <div class="field"><label>Username</label><input id="username" class="input" autocomplete="username"></div>
+        <div class="field"><label>Password</label><input id="password" class="input" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
+      </div>
+      <div class="field"><label>Confirm password</label><input id="password2" class="input" type="password" autocomplete="new-password"></div>
+    </div>
+
+    <div class="sect">
+      <h2>Network</h2>
+      <div class="choice">
+        <div class="opt sel" data-net="mainnet"><div class="t">Mainnet</div><div class="d">Live USDT · real funds</div></div>
+        <div class="opt" data-net="nile"><div class="t">Nile testnet</div><div class="d">Free test funds to rehearse</div></div>
+      </div>
+      <div class="field" id="apiKeyField"><label>TronGrid API key</label>
+        <input id="trongrid_api_key" class="input" placeholder="from trongrid.io">
+        <div class="hint">Required on mainnet. Free to create at trongrid.io.</div></div>
+      <div class="field"><label>USDT contract (TRC-20)</label>
+        <input id="usdt_contract" class="input mono" value="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"></div>
+    </div>
+
+    <div class="sect">
+      <details>
+        <summary>Advanced policy (optional)</summary>
+        <div class="form-grid">
+          <div class="field"><label>Min sweep (USDT)</label><input id="sweep_min_usdt" class="input" type="number" step="0.01" value="1"></div>
+          <div class="field"><label>Gas top-up (TRX)</label><input id="gas_fund_trx" class="input" type="number" step="1" value="20"></div>
+          <div class="field"><label>Pool float (USDT)</label><input id="disbursement_float_usdt" class="input" type="number" step="1" value="500"></div>
+          <div class="field"><label>Max per payout (USDT)</label><input id="max_disburse_usdt" class="input" type="number" step="1" value="2000"></div>
+          <div class="field"><label>Scan interval (seconds)</label><input id="poll_interval_seconds" class="input" type="number" step="1" value="30"></div>
+        </div>
+      </details>
+    </div>
+
+    <button id="go" class="btn btn-primary" style="width:100%;margin-top:8px">Complete setup</button>
+    <div id="err" class="err-text"></div>
+  </div>
+
+  <!-- step 2: success + key backup -->
+  <div class="setup-card" id="done" hidden>
+    <div class="brand"><div class="brand-mark">₮</div><div class="brand-name">Custody Console</div></div>
+    <h1>Setup complete</h1>
+    <div class="sub">Your console is ready. Before you sign in, save the encryption key below.</div>
+    <div class="warn-box">This key encrypts every wallet's private key. If you lose it, the wallets become unrecoverable. Store a copy somewhere safe, and for production move it into a secrets manager.</div>
+    <div class="field"><label>Wallet encryption key</label><div class="enc-key" id="encKey"></div>
+      <div class="form-actions"><button class="btn btn-ghost btn-sm" id="copyKey">Copy key</button></div></div>
+    <a href="/" class="btn btn-primary" style="width:100%;margin-top:10px;text-decoration:none;text-align:center">Go to sign in</a>
+  </div>
+</div>
+<script src="/static/setup.js"></script>
+</body>
+</html>
