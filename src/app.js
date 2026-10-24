@@ -15,7 +15,7 @@ const PUBLIC = path.join(__dirname, "..", "public");
 app.use("/static", express.static(PUBLIC));
 
 const ip = (req) => (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "";
-const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null });
+const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null, auto_approve_limit: u.auto_approve_limit != null ? Number(u.auto_approve_limit) : null });
 const walletOut = (w) => ({ id: w.id, chain: w.chain, address: w.address, wtype: w.wtype, label: w.label, owner_user_id: w.owner_user_id, is_active: !!w.is_active });
 const moveOut = (m) => ({ id: m.id, kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, tx_hash: m.tx_hash, status: m.status, usd_rate: m.usd_rate, created_at: m.created_at });
 
@@ -173,6 +173,22 @@ app.post("/users", currentUser, adminRequired, (req, res) => {
   res.json(userOut(getDb().prepare("SELECT * FROM users WHERE id=?").get(info.lastInsertRowid)));
 });
 
+app.post("/users/:id/limit", currentUser, adminRequired, (req, res) => {
+  const u = getDb().prepare("SELECT * FROM users WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ detail: "user not found" });
+  if (u.role !== "staff") return res.status(400).json({ detail: "limits apply to staff only" });
+  const { limit } = req.body || {};
+  let val = null; // null = fall back to global default
+  if (limit !== null && limit !== "" && limit !== undefined) {
+    const n = Number(limit);
+    if (!Number.isFinite(n) || n < 0) return res.status(400).json({ detail: "invalid limit" });
+    val = n;
+  }
+  getDb().prepare("UPDATE users SET auto_approve_limit=? WHERE id=?").run(val, u.id);
+  svc.audit(req.user.id, "set_staff_limit", `staff #${u.id} -> ${val === null ? "default" : val}`, ip(req));
+  res.json(userOut(getDb().prepare("SELECT * FROM users WHERE id=?").get(u.id)));
+});
+
 // ---------------- wallets ----------------
 app.post("/wallets/treasury", currentUser, adminRequired, wrap(async (req, res) => {
   if (svc.getTreasury()) return res.status(400).json({ detail: "treasury already exists" });
@@ -251,13 +267,19 @@ app.post("/disbursements", currentUser, staffOrAdmin, wrap(async (req, res) => {
   ).run(req.user.id, custId, dest, String(amount), String(reason || ""), new Date().toISOString());
   svc.audit(req.user.id, "disbursement_request", `req#${info.lastInsertRowid} ${amount} USDT -> ${dest}${custId ? ` (customer #${custId})` : ""}`, ip(req));
 
-  // Auto-approve when at/below the admin-set per-transaction limit; otherwise leave for approval.
-  const limit = Number(config.get().staff_auto_approve_limit || 0);
+  // Admin payouts execute immediately. Staff payouts auto-execute at/below their
+  // own limit (or the global default if they have none); otherwise await approval.
   const reqRow = getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(info.lastInsertRowid);
-  if (limit > 0 && Number(amount) <= limit) {
+  const isAdmin = req.user.role === "admin";
+  const staffLimit = req.user.auto_approve_limit != null
+    ? Number(req.user.auto_approve_limit)
+    : Number(config.get().staff_auto_approve_limit || 0);
+  const auto = isAdmin || (staffLimit > 0 && Number(amount) <= staffLimit);
+  if (auto) {
     try {
       const updated = await svc.executeDisbursement(reqRow, req.user.id);
-      svc.audit(req.user.id, "disbursement_auto_approved", `req#${updated.id} <= limit ${limit}`, ip(req));
+      svc.audit(req.user.id, isAdmin ? "disbursement_executed" : "disbursement_auto_approved",
+        `req#${updated.id}${isAdmin ? " (admin)" : " <= limit " + staffLimit}`, ip(req));
       return res.json(disbOut(updated));
     } catch (e) {
       return res.json(disbOut(getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(info.lastInsertRowid)));

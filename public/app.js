@@ -384,26 +384,31 @@ async function renderPayouts(){
   const sec = $("#sec-payouts");
   sec.innerHTML = `<div class="page-head"><div><h1>Payouts</h1>
     <p>${state.user.role === "admin"
-      ? "Review and approve payout requests. Approved payouts leave from a random pool wallet."
-      : "Request a USDT payout. An admin approves before it is sent."}</p></div></div>
+      ? "Make a payout, or review and approve staff requests. Payouts leave from a random pool wallet."
+      : "Request a USDT payout from the pool."}</p></div></div>
     <div id="pBody">Loading…</div>`;
   try{
+    const canPay = state.user.role === "staff" || state.user.role === "admin";
     const [reqs, settings, book] = await Promise.all([
       api("/disbursements"), api("/settings").catch(() => ({})), api("/address-book").catch(() => [])
     ]);
-    $("#pBody").innerHTML = (state.user.role === "staff" ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
-    if (state.user.role === "staff") $("#pSubmit").onclick = submitRequest;
+    $("#pBody").innerHTML = (canPay ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
+    if (canPay) $("#pSubmit").onclick = submitRequest;
     if (state.user.role === "admin")
       document.querySelectorAll(".approve").forEach(b => b.onclick = () => approve(b.dataset));
   }catch(e){ $("#pBody").innerHTML = emptyState(e.message); }
 }
 function staffRequestForm(settings, book){
-  const limit = settings && settings.staff_auto_approve_limit ? Number(settings.staff_auto_approve_limit) : 0;
-  const hint = limit > 0
-    ? `Payouts up to ${fmtUsdt(limit)} USDT are sent immediately; above that needs admin approval.`
-    : `All payouts require admin approval.`;
+  const isAdmin = state.user.role === "admin";
+  const own = state.user.auto_approve_limit;
+  const eff = own != null ? Number(own) : (settings && settings.staff_auto_approve_limit ? Number(settings.staff_auto_approve_limit) : 0);
+  const hint = isAdmin
+    ? "Your payouts are sent immediately."
+    : (eff > 0 ? `Payouts up to ${fmtUsdt(eff)} USDT are sent immediately; above that needs admin approval.` : "All your payouts require admin approval.");
+  const title = isAdmin ? "Make a payout" : "New payout request";
+  const btn = isAdmin ? "Send payout" : "Submit request";
   const opts = (book || []).map(e => `<option value="${esc(e.address)}">${esc(e.label ? e.label + " — " : "")}${esc(e.address)}</option>`).join("");
-  return `<div class="panel"><div class="panel-head"><h2>New payout request</h2></div>
+  return `<div class="panel"><div class="panel-head"><h2>${title}</h2></div>
     <div class="panel-body"><div class="form-grid">
       <div class="field"><label>Recipient address (TRC-20)</label>
         <input id="pTo" class="input mono" placeholder="T… or pick from address book" list="abList">
@@ -413,7 +418,7 @@ function staffRequestForm(settings, book){
     </div>
     <div class="field"><label>Reason / reference (optional)</label>
       <input id="pReason" class="input" placeholder="e.g. settlement #4821"></div>
-    <button class="btn btn-primary" id="pSubmit">Submit request</button>
+    <button class="btn btn-primary" id="pSubmit">${btn}</button>
     <div class="hint" style="margin-top:6px">${hint}</div>
     </div></div>`;
 }
@@ -445,9 +450,11 @@ async function submitRequest(){
   const to = $("#pTo").value.trim(), amt = parseFloat($("#pAmt").value);
   if (!to){ return toast("Enter a recipient address", true); }
   if (!(amt > 0)){ return toast("Enter a valid amount", true); }
-  act(() => api("/disbursements", {method:"POST",
-    body:{ to_address: to, amount: amt, reason: $("#pReason").value.trim() }}),
-    "Payout request submitted", renderPayouts);
+  try{
+    const r = await api("/disbursements", {method:"POST", body:{ to_address: to, amount: amt, reason: $("#pReason").value.trim() }});
+    toast(r.tx_hash ? "Payout sent" : "Payout request submitted for approval");
+    renderPayouts();
+  }catch(e){ toast(e.message, true); }
 }
 async function approve({ id, to, amt }){
   const live = state.network === "mainnet";
@@ -484,10 +491,14 @@ async function renderStaff(){
       <button class="btn btn-primary" id="nuCreate">Create user</button>
       </div></div>
     <div class="panel"><div class="panel-head"><h2>Users (${users.length})</h2></div>
-      <div class="panel-body flush"><table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th></th></tr></thead>
+      <div class="panel-body flush"><table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th>Auto-approve limit (USDT)</th><th></th></tr></thead>
         <tbody>${users.map(u => `<tr><td>#${u.id}</td><td>${esc(u.username)}</td>
           <td><span class="role">${esc(u.role)}</span></td>
           <td>${u.is_active ? statusBadge("confirmed").replace("confirmed","active") : statusBadge("failed").replace("failed","disabled")}</td>
+          <td>${u.role === "staff"
+            ? `<input class="input lim-inp" data-id="${u.id}" type="number" step="0.01" min="0" value="${u.auto_approve_limit != null ? esc(u.auto_approve_limit) : ""}" placeholder="default" style="width:96px;display:inline-block;padding:6px 8px">
+               <button class="btn btn-ghost btn-sm lim-save" data-id="${u.id}">Set</button>`
+            : "—"}</td>
           <td class="row-actions"><button class="btn btn-ghost btn-sm" data-usertx="${u.id}">Transactions</button></td></tr>`).join("")}
         </tbody></table></div></div>`;
     $("#nuCreate").onclick = () => {
@@ -496,6 +507,13 @@ async function renderStaff(){
       if (password.length < 8) return toast("Password must be at least 8 characters", true);
       act(() => api("/users", {method:"POST", body:{ username, password, role }}), "User created", renderStaff);
     };
+    document.querySelectorAll(".lim-save").forEach(b => b.onclick = () => {
+      const id = b.dataset.id;
+      const inp = document.querySelector(`.lim-inp[data-id="${id}"]`);
+      const v = inp.value.trim();
+      act(() => api("/users/" + id + "/limit", {method:"POST", body:{ limit: v === "" ? null : parseFloat(v) }}),
+        v === "" ? "Limit cleared (uses default)" : "Limit updated", renderStaff);
+    });
   }catch(e){ $("#sBody").innerHTML = emptyState(e.message); }
 }
 
@@ -813,9 +831,9 @@ async function renderSettings(){
   try{
     const s = await api("/settings");
     $("#stBody").innerHTML = `<div class="panel"><div class="panel-head"><h2>Payout policy</h2></div><div class="panel-body">
-      <div class="field"><label>Staff auto-approve limit (USDT, per transaction)</label>
+      <div class="field"><label>Default staff auto-approve limit (USDT, per transaction)</label>
         <input id="stLimit" class="input" type="number" step="0.01" min="0" value="${esc(s.staff_auto_approve_limit)}">
-        <div class="hint">Staff payouts at or below this amount go out without approval. 0 = every staff payout needs admin approval.</div></div>
+        <div class="hint">Applies to staff without their own limit. Set per-staff limits on the Staff screen. 0 = require approval for every staff payout.</div></div>
       <div class="field"><label>Per-payout ceiling (USDT)</label>
         <input id="stMax" class="input" type="number" step="0.01" min="0" value="${esc(s.max_disburse_usdt)}">
         <div class="hint">Hard maximum for any single payout.</div></div>

@@ -120,9 +120,12 @@ view other customers, or see the audit log.
   source: the **treasury** or any **pool (normal) wallet**. It goes out immediately with no
   approval step. Staff can never send from the treasury or use this direct send — staff move
   funds only through the normal payout flow (subject to the auto-approve limit).
-- **Per-transaction auto-approve limit** — on the Settings screen, an admin sets a USDT
-  limit. Staff payouts at or below the limit are sent immediately; anything above it stays
-  pending until an admin approves it. A per-payout hard ceiling is also configurable.
+- **Admin payouts** — admins can make a payout straight from the Payouts screen; it executes
+  immediately from the pool, no approval needed.
+- **Auto-approve limits, global and per-staff** — Settings holds a *default* staff limit;
+  each staff member can be given their own limit on the Staff screen (blank = use the default).
+  A staff payout at or below their limit is sent immediately; above it, it waits for admin
+  approval. A per-payout hard ceiling is also configurable.
 
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).

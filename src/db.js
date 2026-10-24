@@ -18,6 +18,7 @@ function getDb() {
       role TEXT NOT NULL DEFAULT 'staff',   -- admin | staff | customer
       is_active INTEGER NOT NULL DEFAULT 1,
       customer_type TEXT,                   -- depositor | remittance (customers only)
+      auto_approve_limit REAL,              -- per-staff payout auto-approve limit (null = use global default)
       created_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS wallets (
@@ -94,6 +95,7 @@ function getDb() {
   if (!mcols.includes("usd_rate")) db.exec("ALTER TABLE movements ADD COLUMN usd_rate TEXT");
   const ucols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!ucols.includes("customer_type")) db.exec("ALTER TABLE users ADD COLUMN customer_type TEXT");
+  if (!ucols.includes("auto_approve_limit")) db.exec("ALTER TABLE users ADD COLUMN auto_approve_limit REAL");
   const dcols = db.prepare("PRAGMA table_info(disbursement_requests)").all().map((c) => c.name);
   if (!dcols.includes("customer_id")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN customer_id INTEGER");
 
