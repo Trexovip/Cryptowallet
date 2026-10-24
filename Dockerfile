@@ -19,7 +19,8 @@ ENV HOST=0.0.0.0 \
     PORT=8000 \
     CUSTODY_DATA_DIR=/app/data
 
+# Persistent storage: attach a Railway Volume with mount path /app/data
+# (do NOT use a Docker VOLUME instruction — Railway's builder rejects it).
 EXPOSE 8000
-VOLUME ["/app/data"]
 
 CMD ["node", "src/server.js"]
