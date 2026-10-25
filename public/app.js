@@ -394,17 +394,8 @@ async function renderReceive(sec){
   try{
     const wallets = (await api("/wallets")).filter(w => w.wtype === "deposit");
     if (!wallets.length){ $("#rBody").innerHTML = emptyState("No deposit address assigned yet. Ask an admin to create one for you."); return; }
-    $("#rBody").innerHTML = wallets.map((w,i) => `
-      <div class="panel"><div class="panel-head"><h2>${esc(w.label || "Deposit address " + (i+1))}</h2></div>
-        <div class="panel-body"><div class="qr-wrap">
-          <div class="qr-box" id="qr-${w.id}"></div>
-          <div style="flex:1;min-width:220px">
-            <div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
-            <div class="recv-addr">${esc(w.address)}</div>
-            <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}" data-qrcustomer="${esc(state.user.username)}">Share</button></div>
-          </div></div></div></div>`).join("");
-    wallets.forEach(w => { new QRCode($("#qr-"+w.id), { text:w.address, width:132, height:132,
-      correctLevel: QRCode.CorrectLevel.M }); });
+    $("#rBody").innerHTML = wallets.map((w,i) => receiveCard({ name: state.user.username, walletLabel: w.label || ("Deposit address " + (i+1)), address: w.address })).join("");
+    await mountReceiveCards($("#rBody"));
   }catch(e){ $("#rBody").innerHTML = emptyState(e.message); }
 }
 
@@ -906,12 +897,8 @@ async function renderCustomerAssets(){
     const me = await api("/customer/me");
     if (me.customer_type === "depositor"){
       sec.innerHTML = `<div class="page-head"><h1>Your deposit address</h1><p>Send TRC-20 USDT here. Deposits are credited automatically.</p></div>
-        ${me.deposit_addresses.map((w,i) => `<div class="panel"><div class="panel-head"><h2>${esc(w.label||"Deposit address "+(i+1))}</h2></div>
-          <div class="panel-body"><div class="qr-wrap"><div class="qr-box" id="cqr-${w.id}"></div>
-          <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
-          <div class="recv-addr">${esc(w.address)}</div>
-          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}" data-qrcustomer="${esc(state.user.username)}">Share</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
-      me.deposit_addresses.forEach(w => { try { new QRCode($("#cqr-" + w.id), { text:w.address, width:132, height:132, correctLevel: QRCode.CorrectLevel.M }); } catch(e){} });
+        ${me.deposit_addresses.map(w => receiveCard({ name: state.user.username, walletLabel: w.label, address: w.address })).join("") || emptyState("No deposit address assigned yet.")}`;
+      await mountReceiveCards(sec);
     } else {
       sec.innerHTML = `<div class="page-head"><h1>Your whitelisted addresses</h1><p>Payouts can only be sent to these approved addresses. Contact support to change them.</p></div>
         <div class="panel"><div class="panel-body flush">${me.whitelist.length ? `<table><thead><tr><th>Address</th><th>Label</th></tr></thead><tbody>
@@ -1366,16 +1353,18 @@ function ensureQrModal(){
   if ($("#qrBack")) return;
   const d = document.createElement("div");
   d.id = "qrBack"; d.className = "modal-back";
-  d.innerHTML = `<div class="modal" style="max-width:320px">
-    <div class="modal-head"><h3 id="qrTitle">Wallet address</h3></div>
+  d.innerHTML = `<div class="modal" style="max-width:340px">
+    <div class="modal-head"><h3 id="qrTitle">Receive</h3></div>
     <div class="modal-body" style="text-align:center">
-      <div id="qrBox" class="qr-box" style="display:inline-block"></div>
-      <div class="recv-addr" id="qrAddr" style="margin-top:12px;user-select:all"></div>
-      <div class="form-actions" style="justify-content:center;margin-top:12px">
+      <div class="rc-asset" style="margin-bottom:14px"><span class="rc-coin">&#8366;</span> USDT (TRC20)</div>
+      <div id="qrBox" class="rc-qr"></div>
+      <div class="rc-addr" id="qrAddr" style="margin-top:14px"></div>
+      <div class="form-actions" style="justify-content:center;margin-top:14px">
         <button class="btn btn-ghost btn-sm" id="qrCopy">Copy</button>
         <button class="btn btn-ghost btn-sm" id="qrDownload">Download</button>
         <button class="btn btn-accent btn-sm" id="qrShare">Share</button>
-      </div></div>
+      </div>
+      <div class="rc-warn" style="margin-top:14px"><span class="rc-warn-ic">i</span><span>This address accepts only <b>USDT (TRC20)</b>. Other tokens sent here will be lost.</span></div></div>
     <div class="modal-foot"><button class="btn btn-ghost" id="qrClose">Close</button></div></div>`;
   document.body.appendChild(d);
   $("#qrClose").onclick = () => d.classList.remove("show");
@@ -1455,11 +1444,33 @@ async function qrShare(){
   } catch (e) { if (e && e.name === "AbortError") return; }
   navigator.clipboard.writeText(text).then(() => toast("Details copied — ready to share"));
 }
+function colorAddr(a){ const g1 = a.slice(0, 6), g2 = a.slice(-6), mid = a.slice(6, -6); return `<span class="g">${esc(g1)}</span>${esc(mid)}<span class="g">${esc(g2)}</span>`; }
+function receiveCard(opts){
+  const a = opts.address;
+  return `<div class="rc">
+    <div class="rc-name"><span class="rc-name-ic">&#128100;</span> ${esc(opts.name || opts.walletLabel || "Receive")}</div>
+    <div class="rc-card">
+      <div class="rc-asset"><span class="rc-coin">&#8366;</span> USDT (TRC20)</div>
+      <div class="rc-qr" data-qrbox="${esc(a)}"></div>
+      <div class="rc-addr">${colorAddr(a)}</div>
+      <div class="rc-btns">
+        <button class="btn btn-ghost rc-share" data-addr="${esc(a)}" data-name="${esc(opts.name || "")}" data-label="${esc(opts.walletLabel || "")}">Share</button>
+        <button class="btn btn-primary" data-copy="${esc(a)}">Copy</button>
+      </div>
+    </div>
+    <div class="rc-warn"><span class="rc-warn-ic">i</span><span>This address accepts only <b>USDT (TRC20)</b>. Sending any other token to it will result in permanent loss.</span></div>
+  </div>`;
+}
+async function mountReceiveCards(root){
+  const r = root || document;
+  for (const box of r.querySelectorAll(".rc-qr[data-qrbox]")){ try { const cv = await makeQrCanvas(box.dataset.qrbox, 200); box.innerHTML = ""; box.appendChild(cv); } catch (e) {} }
+  r.querySelectorAll(".rc-share").forEach((b) => b.onclick = () => showQr(b.dataset.addr, b.dataset.label || "Receive", b.dataset.name));
+}
 async function showQr(address, label, customerName){
   ensureQrModal();
   _qrCur = { address, label: label || "KryvonWallet", customerName: customerName || "" };
-  $("#qrTitle").textContent = label || "Wallet address";
-  $("#qrAddr").textContent = address;
+  $("#qrTitle").textContent = customerName || label || "Receive";
+  $("#qrAddr").innerHTML = colorAddr(address);
   const box = $("#qrBox"); box.innerHTML = "<span class='hint'>Generating…</span>";
   try { const canvas = await makeQrCanvas(address, 180); box.innerHTML = ""; box.appendChild(canvas); } catch (e) { box.textContent = "QR error"; }
   $("#qrBack").classList.add("show");

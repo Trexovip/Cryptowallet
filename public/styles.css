@@ -230,3 +230,27 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
   .main{padding:20px 16px 56px}
   .topbar{height:auto;padding:10px 16px}
 }
+
+/* ---------- Receive card (deposit/QR) ---------- */
+.rc{max-width:440px;margin:0 auto;display:grid;gap:14px}
+.rc-name{display:flex;align-items:center;gap:10px;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:14px;padding:13px 16px;font-weight:600;font-size:15px;color:var(--ink)}
+.rc-name-ic{width:26px;height:26px;border-radius:50%;background:var(--surface);border:1px solid var(--line);
+  display:grid;place-items:center;font-size:13px;color:var(--muted)}
+.rc-card{background:var(--surface-2);border:1px solid var(--line);border-radius:18px;padding:22px 20px;text-align:center}
+.rc-asset{display:flex;align-items:center;justify-content:center;gap:10px;font-weight:700;font-size:19px;
+  letter-spacing:-.01em;margin-bottom:18px;color:var(--ink)}
+.rc-coin{width:30px;height:30px;border-radius:9px;background:linear-gradient(145deg,#26A17B,#1E8E6A);color:#fff;
+  display:grid;place-items:center;font-weight:800;font-size:17px;box-shadow:0 2px 6px rgba(38,161,123,.4)}
+.rc-qr{display:inline-block;background:#fff;padding:16px;border-radius:16px;line-height:0;box-shadow:var(--shadow)}
+.rc-qr canvas,.rc-qr img{display:block;border-radius:4px}
+.rc-addr{font-family:var(--mono);font-size:14px;word-break:break-all;line-height:1.5;margin:18px auto 0;max-width:340px;
+  color:var(--ink)}
+.rc-addr .g{color:var(--accent);font-weight:600}
+.rc-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:18px}
+.rc-btns .btn{width:100%;justify-content:center;padding:12px;font-size:14px}
+.rc-warn{display:flex;gap:10px;align-items:flex-start;background:var(--surface-2);border:1px solid var(--line);
+  border-radius:14px;padding:13px 15px;color:var(--muted);font-size:13px;line-height:1.5;text-align:left}
+.rc-warn b{color:var(--ink)}
+.rc-warn-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;border:1px solid var(--line-strong);
+  display:grid;place-items:center;font-size:12px;font-style:italic;font-weight:700;color:var(--muted);margin-top:1px}
