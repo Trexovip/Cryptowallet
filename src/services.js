@@ -69,6 +69,15 @@ async function createWallet(wtype, ownerUserId = null, label = "") {
   ).run(w.address, sec.encryptSecret(w.privateKey), wtype, label, ownerUserId, now());
   const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
   await preloadGas(wallet);
+  // best-effort: label customer deposit wallets on-chain (TRON account name, one-time)
+  try {
+    const tpl = get().customer_onchain_name != null ? get().customer_onchain_name : "KryvonWallet-{id}";
+    if (tpl && wtype === "deposit") {
+      const owner = wallet.owner_user_id ? getDb().prepare("SELECT username FROM users WHERE id=?").get(wallet.owner_user_id) : null;
+      const name = renderCustomerName(tpl, { id: wallet.owner_user_id || "", username: owner ? owner.username : "", app: get().app_name || "KryvonWallet" });
+      if (name) await setOnchainName(wallet, name);
+    }
+  } catch (e) { /* non-fatal */ }
   return wallet;
 }
 const getTreasury = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='treasury' AND is_active=1").get();
@@ -266,7 +275,24 @@ async function setOnchainName(wallet, name) {
   return { tx };
 }
 
+// Render an on-chain name template for a customer wallet. Placeholders: {id} {username} {customer} {app}.
+function renderCustomerName(tpl, ctx) {
+  return String(tpl || "")
+    .replace(/\{id\}/g, ctx.id != null ? ctx.id : "")
+    .replace(/\{username\}/g, ctx.username || "")
+    .replace(/\{customer\}/g, ctx.username || "")
+    .replace(/\{app\}/g, ctx.app || "")
+    .trim().slice(0, 32);
+}
+
+async function ownershipProof(wallet, project) {
+  const message = `I confirm this address belongs to ${project}.`;
+  const pk = sec.decryptSecret(wallet.enc_privkey);
+  const signature = await chain.signMessage(pk, message);
+  return { address: wallet.address, message, signature };
+}
+
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
-  distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName,
+  distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
 };

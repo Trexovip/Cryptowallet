@@ -125,6 +125,7 @@ function getDb() {
   if (!ucols.includes("customer_type")) db.exec("ALTER TABLE users ADD COLUMN customer_type TEXT");
   if (!ucols.includes("auto_approve_limit")) db.exec("ALTER TABLE users ADD COLUMN auto_approve_limit REAL");
   if (!ucols.includes("phone")) db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
+  if (!ucols.includes("pay_token")) db.exec("ALTER TABLE users ADD COLUMN pay_token TEXT");
   const dcols = db.prepare("PRAGMA table_info(disbursement_requests)").all().map((c) => c.name);
   if (!dcols.includes("customer_id")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN customer_id INTEGER");
   if (!dcols.includes("idempotency_key")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN idempotency_key TEXT");

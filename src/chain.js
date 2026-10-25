@@ -89,4 +89,11 @@ async function setAccountName(privHex, name) {
   return (res && (res.txid || (res.transaction && res.transaction.txID))) || "";
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName };
+// Sign an arbitrary message with the wallet's key (for Tronscan ownership proof).
+async function signMessage(privHex, message) {
+  const tw = signer(String(privHex).replace(/^0x/, ""));
+  if (tw.trx && tw.trx.signMessageV2) return await tw.trx.signMessageV2(message);
+  return await tw.trx.sign(message);
+}
+
+module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage };

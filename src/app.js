@@ -17,6 +17,12 @@ app.use("/static", express.static(PUBLIC));
 const ip = (req) => (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "";
 const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null, auto_approve_limit: u.auto_approve_limit != null ? Number(u.auto_approve_limit) : null, phone: u.phone || null });
 const assignedStaffIds = (customerId) => getDb().prepare("SELECT staff_id FROM customer_staff WHERE customer_id=?").all(customerId).map((r) => r.staff_id);
+function ensurePayToken(u) {
+  if (u.pay_token) return u.pay_token;
+  const tok = crypto.randomBytes(12).toString("base64url");
+  getDb().prepare("UPDATE users SET pay_token=? WHERE id=?").run(tok, u.id);
+  return tok;
+}
 function canAccessCustomer(user, customerId) {
   if (user.role === "admin") return true;
   if (user.role === "customer") return Number(user.id) === Number(customerId);
@@ -93,6 +99,8 @@ app.use((req, res, next) => {
     req.path.startsWith("/static/") ||
     req.path === "/health" ||
     req.path === "/branding" ||
+    req.path.startsWith("/pay/") ||
+    req.path.startsWith("/paylink/") ||
     req.path === "/api/setup/status" ||
     (req.path === "/api/setup" && req.method === "POST");
   if (allowed) return next();
@@ -109,6 +117,16 @@ app.get("/health", (_req, res) => res.json({ status: "ok", time: new Date().toIS
 app.get("/branding", (_req, res) => {
   let c = {}; try { c = config.get(); } catch { c = {}; }
   res.json({ app_name: c.app_name || "KryvonWallet", brand_logo: c.brand_logo || "", favicon: c.favicon || "", qr_logo: c.qr_logo || "" });
+});
+
+// Public payment link: page + data (no auth). Token is unguessable.
+app.get("/pay/:token", (_req, res) => res.sendFile(path.join(PUBLIC, "pay.html")));
+app.get("/paylink/:token", (req, res) => {
+  let c = {}; try { c = config.get(); } catch { c = {}; }
+  const u = getDb().prepare("SELECT * FROM users WHERE pay_token=? AND role='customer' AND is_active=1").get(req.params.token);
+  if (!u) return res.status(404).json({ detail: "invalid or expired link" });
+  const addresses = getDb().prepare("SELECT address,label FROM wallets WHERE owner_user_id=? AND wtype='deposit' AND is_active=1").all(u.id);
+  res.json({ app_name: c.app_name || "KryvonWallet", brand_logo: c.brand_logo || "", qr_logo: c.qr_logo || "", customer_name: u.username, addresses });
 });
 
 // ---------------- setup wizard API ----------------
@@ -326,6 +344,20 @@ app.get("/wallets/export", currentUser, adminRequired, (req, res) => {
      .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, wallets }, null, 2));
 });
 
+// Export ALL wallets as CSV (admin only, audited).
+app.get("/wallets/export.csv", currentUser, adminRequired, (req, res) => {
+  const rows = getDb().prepare("SELECT * FROM wallets ORDER BY id").all();
+  const head = ["type", "label", "address", "owner", "private_key"];
+  const lines = [head.join(",")];
+  for (const w of rows) {
+    let pk = ""; try { pk = sec.decryptSecret(w.enc_privkey); } catch { pk = ""; }
+    const owner = w.owner_user_id ? ((getDb().prepare("SELECT username FROM users WHERE id=?").get(w.owner_user_id) || {}).username || "") : "";
+    lines.push([friendlyType(w.wtype), w.label || "", w.address, owner, pk].map(csvEscape).join(","));
+  }
+  svc.audit(req.user.id, "export_all_wallets_csv", `${rows.length} wallets`, ip(req));
+  res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=kryvonwallet-wallets-backup.csv").send(lines.join("\n"));
+});
+
 // Bulk import wallets from a backup (admin only, audited). No gas pre-load on restore.
 app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, res) => {
   const body = req.body || {};
@@ -351,6 +383,24 @@ app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, re
   }
   svc.audit(req.user.id, "import_all_wallets", `imported ${imported}, skipped ${skipped}`, ip(req));
   res.json({ imported, skipped, errors });
+}));
+
+// Apply the configured on-chain name to every existing customer deposit wallet (admin).
+app.post("/wallets/name-customers", currentUser, adminRequired, wrap(async (req, res) => {
+  const tpl = config.get().customer_onchain_name != null ? config.get().customer_onchain_name : "KryvonWallet-{id}";
+  const t = String(tpl).trim() || String((req.body || {}).name || "").trim();
+  if (!t) return res.status(400).json({ detail: "no on-chain name configured" });
+  const appName = config.get().app_name || "KryvonWallet";
+  const rows = getDb().prepare("SELECT * FROM wallets WHERE wtype='deposit' AND is_active=1").all();
+  let named = 0, failed = 0;
+  for (const w of rows) {
+    const owner = w.owner_user_id ? getDb().prepare("SELECT username FROM users WHERE id=?").get(w.owner_user_id) : null;
+    const name = svc.renderCustomerName(t, { id: w.owner_user_id || "", username: owner ? owner.username : "", app: appName });
+    if (!name) { failed++; continue; }
+    try { await svc.setOnchainName(w, name); named++; } catch (e) { failed++; }
+  }
+  svc.audit(req.user.id, "name_customer_wallets", `named ${named}, failed ${failed}`, ip(req));
+  res.json({ named, failed, total: rows.length });
 }));
 
 // Reveal a wallet's private key (admin only, audited). For backup / import / migration.
@@ -383,6 +433,16 @@ app.post("/wallets/:id/onchain-name", currentUser, adminRequired, wrap(async (re
   getDb().prepare("UPDATE wallets SET label=? WHERE id=?").run(name, w.id);
   svc.audit(req.user.id, "set_onchain_name", `${w.address} -> ${name} tx=${r.tx}`, ip(req));
   res.json({ ok: true, tx: r.tx });
+}));
+
+// Generate a Tronscan public-tag ownership proof (signed message) for a wallet (admin).
+app.post("/wallets/:id/ownership-proof", currentUser, adminRequired, wrap(async (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  const project = String((req.body || {}).project || config.get().app_name || "KryvonWallet").trim();
+  const r = await svc.ownershipProof(w, project);
+  svc.audit(req.user.id, "tronscan_proof", `${w.address} (${project})`, ip(req));
+  res.json(r);
 }));
 
 // Import an existing private key as a wallet (admin only).
@@ -492,8 +552,9 @@ app.post("/customers", currentUser, staffOrAdmin, wrap(async (req, res) => {
   if (!["depositor", "remittance"].includes(customer_type)) return res.status(400).json({ detail: "customer_type must be depositor or remittance" });
   if (getDb().prepare("SELECT 1 FROM users WHERE username=?").get(username)) return res.status(400).json({ detail: "username exists" });
 
-  const info = getDb().prepare("INSERT INTO users(username,password_hash,role,is_active,customer_type,phone,created_at) VALUES(?,?,'customer',1,?,?,?)")
-    .run(username, sec.hashPassword(password), customer_type, String(phone || "").trim() || null, new Date().toISOString());
+  const payTok = crypto.randomBytes(12).toString("base64url");
+  const info = getDb().prepare("INSERT INTO users(username,password_hash,role,is_active,customer_type,phone,pay_token,created_at) VALUES(?,?,'customer',1,?,?,?,?)")
+    .run(username, sec.hashPassword(password), customer_type, String(phone || "").trim() || null, payTok, new Date().toISOString());
   const custId = info.lastInsertRowid;
   const out = { id: custId, username, role: "customer", customer_type };
 
@@ -525,7 +586,7 @@ app.get("/customers/:id", currentUser, staffOrAdmin, (req, res) => {
   const whitelist = getDb().prepare("SELECT id,address,label,is_active FROM customer_whitelist WHERE customer_id=? AND is_active=1").all(u.id);
   const deposit_addresses = getDb().prepare("SELECT id,address,label FROM wallets WHERE owner_user_id=? AND wtype='deposit'").all(u.id);
   const assigned_staff = getDb().prepare("SELECT u.id,u.username FROM customer_staff cs JOIN users u ON u.id=cs.staff_id WHERE cs.customer_id=?").all(u.id);
-  res.json({ id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, phone: u.phone || null, whitelist, deposit_addresses, assigned_staff });
+  res.json({ id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, phone: u.phone || null, pay_token: ensurePayToken(u), whitelist, deposit_addresses, assigned_staff });
 });
 
 // assign / unassign staff to a customer (admin)
@@ -567,7 +628,7 @@ app.get("/my/customers", currentUser, staffOrAdmin, (req, res) => {
         recent = db.prepare(`SELECT * FROM movements WHERE kind='deposit_in' AND wallet_id IN (${inq}) ORDER BY id DESC LIMIT 5`).all(...wids).map(moveOut);
       }
     }
-    return { id: u.id, username: u.username, customer_type: u.customer_type, phone: u.phone || null, total_received: total, recent };
+    return { id: u.id, username: u.username, customer_type: u.customer_type, phone: u.phone || null, pay_token: ensurePayToken(u), total_received: total, recent };
   }));
 });
 
@@ -697,6 +758,7 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     brand_logo: c.brand_logo || "",
     favicon: c.favicon || "",
     qr_logo: c.qr_logo || "",
+    customer_onchain_name: c.customer_onchain_name != null ? c.customer_onchain_name : "KryvonWallet-{id}",
     setup_at: c.setup_at || null,
   });
 });
@@ -721,6 +783,7 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   if (b.payout_allowlist_only !== undefined) c.payout_allowlist_only = !!b.payout_allowlist_only;
   if (b.auto_distribute_enabled !== undefined) c.auto_distribute_enabled = !!b.auto_distribute_enabled;
   if (b.app_name !== undefined) c.app_name = String(b.app_name || "").trim().slice(0, 60) || "KryvonWallet";
+  if (b.customer_onchain_name !== undefined) c.customer_onchain_name = String(b.customer_onchain_name || "").trim().slice(0, 64);
   for (const k of ["brand_logo", "favicon", "qr_logo"]) {
     if (b[k] !== undefined) {
       const v = String(b[k] || "");

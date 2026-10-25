@@ -245,6 +245,7 @@ async function renderWallets(){
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${treasury.id}">Check balance</button>
            <button class="btn btn-ghost btn-sm" data-secret="${treasury.id}">Key</button>
            <button class="btn btn-ghost btn-sm" data-wname="${treasury.id}" data-wlabel="${esc(treasury.label||'')}">Name</button>
+           <button class="btn btn-ghost btn-sm" data-proof="${treasury.id}">Tronscan</button>
            <button class="btn btn-ghost btn-sm" data-qr="${esc(treasury.address)}" data-qrlabel="${esc(treasury.label||'treasury')}">QR</button>
            <span class="hint" id="bal-${treasury.id}"></span></div>`
         : `<span class="hint">Deposits are swept here automatically. Keep the bulk of funds in cold storage.</span>`}
@@ -276,6 +277,7 @@ async function renderWallets(){
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${fee.id}">Check balance</button>
            <button class="btn btn-ghost btn-sm" data-secret="${fee.id}">Key</button>
            <button class="btn btn-ghost btn-sm" data-wname="${fee.id}" data-wlabel="${esc(fee.label||'')}">Name</button>
+           <button class="btn btn-ghost btn-sm" data-proof="${fee.id}">Tronscan</button>
            <button class="btn btn-ghost btn-sm" data-qr="${esc(fee.address)}" data-qrlabel="${esc(fee.label||'gas wallet')}">QR</button>
            <span class="hint" id="bal-${fee.id}"></span></div>`
         : `<span class="hint">Needed to pay the network fee when sweeping TRC-20 deposits.</span>`}
@@ -649,6 +651,8 @@ async function openReceipt(key){
 }
 
 document.addEventListener("click", (e) => {
+  const pf = e.target.closest("[data-proof]");
+  if (pf){ showProof(pf.dataset.proof); return; }
   const wn = e.target.closest("[data-wname]");
   if (wn){ openWalletName(wn.dataset.wname, wn.dataset.wlabel || ""); return; }
   const sk = e.target.closest("[data-secret]");
@@ -728,6 +732,7 @@ async function renderMyCustomers(){
         <h2>${esc(c.username)} <span class="role-pill">${esc(c.customer_type)}</span></h2>
         <div class="row-actions">
           <button class="btn btn-ghost btn-sm mc-msg" data-id="${c.id}" data-name="${esc(c.username)}" data-phone="${esc(c.phone || "")}">Messages</button>
+          ${c.customer_type === "depositor" && c.pay_token ? `<button class="btn btn-ghost btn-sm" data-copy="${esc(location.origin + "/pay/" + c.pay_token)}">Pay link</button>` : ""}
         </div></div>
       <div class="panel-body">
         <div class="stat-row"><div class="s"><div class="n num">${fmtUsdt(c.total_received)}</div><div class="l">Total received (USDT)</div></div>
@@ -849,7 +854,14 @@ async function openCustomer(id){
       <div class="hint" style="margin-bottom:8px">Phone: ${c.phone ? esc(c.phone) : "—"}</div>
       <div class="form-actions"><button class="btn btn-primary btn-sm" id="cuMsg">Open messages</button></div></div></div>`;
 
-    d.innerHTML = main + staffPanel + commsPanel;
+    const payUrl = c.pay_token ? (location.origin + "/pay/" + c.pay_token) : "";
+    const payPanel = `<div class="panel"><div class="panel-head"><h2>Payment link</h2></div><div class="panel-body">
+      ${(c.deposit_addresses && c.deposit_addresses.length && payUrl) ? `<div class="recv-addr">${esc(payUrl)}</div>
+        <div class="form-actions" style="margin-top:8px"><button class="btn btn-ghost btn-sm" data-copy="${esc(payUrl)}">Copy link</button><a class="btn btn-ghost btn-sm" href="${esc(payUrl)}" target="_blank" rel="noopener">Open</a></div>
+        <div class="hint" style="margin-top:6px">Share with anyone who needs to pay ${esc(c.username)} — a branded page with their deposit address and QR.</div>`
+        : `<div class="hint">A payment link needs a deposit address${c.customer_type === "remittance" ? " (remittance customers receive payouts, not deposits)" : ""}.</div>`}
+    </div></div>`;
+    d.innerHTML = main + staffPanel + commsPanel + payPanel;
 
     if (c.customer_type === "remittance") {
       document.querySelectorAll(".wl-del").forEach(b => b.onclick = () =>
@@ -1012,6 +1024,16 @@ async function renderReports(){
 }
 
 /* ---------- wallet naming ---------- */
+async function showProof(id){
+  try {
+    const r = await api("/wallets/" + id + "/ownership-proof", { method: "POST", body: { project: (state.branding && state.branding.app_name) || "KryvonWallet" } });
+    await confirmModal({ title: "Tronscan ownership proof", okLabel: "Done", okClass: "btn-primary",
+      bodyHtml: `<div class="hint" style="margin-bottom:10px">Submit these at <b>tronscan.org \u2192 Contact Us \u2192 Submit Tag</b> to request a public name tag for this address.</div>
+        <div class="field"><label>Address</label><div class="recv-addr">${esc(r.address)}</div></div>
+        <div class="field"><label>Message</label><div class="recv-addr">${esc(r.message)}</div><div class="form-actions" style="margin-top:6px"><button class="btn btn-ghost btn-sm" data-copy="${esc(r.message)}">Copy message</button></div></div>
+        <div class="field"><label>Signature</label><div class="recv-addr" style="user-select:all;word-break:break-all">${esc(r.signature)}</div><div class="form-actions" style="margin-top:6px"><button class="btn btn-ghost btn-sm" data-copy="${esc(r.signature)}">Copy signature</button></div></div>` });
+  } catch (e) { toast(e.message, true); }
+}
 async function openWalletName(id, label){
   const ok = await confirmModal({ title:"Wallet name", okLabel:"Save",
     bodyHtml:`<div class="field"><label>Display name (shown in this app)</label><input id="wnName" class="input" value="${esc(label || "")}"></div>
@@ -1029,29 +1051,65 @@ async function openWalletName(id, label){
 }
 
 /* ---------- backup & restore (admin) ---------- */
+function parseCsv(text){
+  const rows = []; let i = 0, field = "", row = [], q = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i += 2; continue; } q = false; i++; continue; } field += ch; i++; continue; }
+    if (ch === '"') { q = true; i++; continue; }
+    if (ch === ",") { row.push(field); field = ""; i++; continue; }
+    if (ch === "\r") { i++; continue; }
+    if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    field += ch; i++;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.length && r.some((c) => c !== ""));
+}
+function csvToWallets(text){
+  const rows = parseCsv(text); if (!rows.length) return [];
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  const idx = (names) => { for (const n of names) { const k = header.indexOf(n); if (k >= 0) return k; } return -1; };
+  const iType = idx(["type", "wtype"]), iLabel = idx(["label", "name"]), iAddr = idx(["address"]),
+        iKey = idx(["private_key", "privatekey", "key", "privkey"]), iOwner = idx(["owner", "owner_username", "customer"]);
+  return rows.slice(1).map((r) => ({
+    type: iType >= 0 ? (r[iType] || "").trim() : "",
+    label: iLabel >= 0 ? (r[iLabel] || "").trim() : "",
+    address: iAddr >= 0 ? (r[iAddr] || "").trim() : "",
+    private_key: iKey >= 0 ? (r[iKey] || "").trim() : "",
+    owner: iOwner >= 0 ? (r[iOwner] || "").trim() : "",
+  }));
+}
 async function renderBackup(){
   const sec = $("#sec-backup");
   sec.innerHTML = `<div class="page-head"><h1>Backup &amp; restore</h1><p>Export or import every wallet — address, label, type, and private key.</p></div>
     <div class="panel"><div class="panel-head"><h2>Export all wallets</h2></div><div class="panel-body">
       <div class="live-note">The export file contains <b>private keys for every wallet</b> (treasury, gas, pool, and customer). Anyone who has it controls all funds — store it encrypted and offline.</div>
-      <div class="form-actions" style="margin-top:12px"><button class="btn btn-primary" id="bkExport">Download wallet backup (.json)</button></div>
+      <div class="form-actions" style="margin-top:12px"><button class="btn btn-primary" id="bkExport">Download JSON</button><button class="btn btn-ghost" id="bkExportCsv">Download CSV</button></div>
     </div></div>
     <div class="panel"><div class="panel-head"><h2>Import wallets</h2></div><div class="panel-body">
-      <div class="field"><label>Backup file (.json)</label><input type="file" id="bkFile" accept="application/json,.json" class="input"></div>
-      <div class="field"><label>…or paste backup JSON</label><textarea id="bkPaste" class="input" rows="6" placeholder='{"wallets":[{"type":"pool","label":"...","address":"...","private_key":"..."}]}'></textarea></div>
+      <div class="field"><label>Backup file (.json or .csv)</label><input type="file" id="bkFile" accept=".json,.csv,application/json,text/csv" class="input"></div>
+      <div class="field"><label>…or paste JSON / CSV</label><textarea id="bkPaste" class="input" rows="6" placeholder='type,label,address,owner,private_key
+pool,pool-1,T...,,abc123...'></textarea></div>
       <button class="btn btn-primary" id="bkImport">Import wallets</button>
       <div id="bkResult" class="hint" style="margin-top:10px"></div>
       <div class="hint">Wallets that already exist (same address) and a second treasury are skipped. Imported wallets aren't pre-funded — they already hold their on-chain balances.</div>
     </div></div>`;
   $("#bkExport").onclick = () => downloadCsv("/wallets/export", "kryvonwallet-wallets-backup.json");
+  $("#bkExportCsv").onclick = () => downloadCsv("/wallets/export.csv", "kryvonwallet-wallets-backup.csv");
   $("#bkImport").onclick = async () => {
     let text = $("#bkPaste").value.trim();
     const f = $("#bkFile").files && $("#bkFile").files[0];
     if (!text && f) { try { text = await f.text(); } catch (e) { return toast("Could not read file", true); } }
-    if (!text) return toast("Choose a file or paste JSON", true);
-    let data; try { data = JSON.parse(text); } catch (e) { return toast("Invalid JSON", true); }
+    if (!text) return toast("Choose a file or paste JSON/CSV", true);
+    let wallets;
+    const looksCsv = (f && /\.csv$/i.test(f.name)) || (!/^\s*[\[{]/.test(text) && /address/i.test(text.split(/\r?\n/)[0] || ""));
     try {
-      const r = await api("/wallets/import-bulk", { method: "POST", body: data });
+      if (looksCsv) wallets = csvToWallets(text);
+      else { const data = JSON.parse(text); wallets = Array.isArray(data) ? data : (data.wallets || []); }
+    } catch (e) { return toast("Could not parse the file (expected JSON or CSV)", true); }
+    if (!wallets || !wallets.length) return toast("No wallets found in the file", true);
+    try {
+      const r = await api("/wallets/import-bulk", { method: "POST", body: { wallets } });
       $("#bkResult").textContent = `Imported ${r.imported}, skipped ${r.skipped}${r.errors && r.errors.length ? `, errors: ${r.errors.length}` : ""}.`;
       toast("Import complete");
     } catch (e) { toast(e.message, true); }
@@ -1237,6 +1295,10 @@ async function renderSettings(){
 
     <div class="panel"><div class="panel-head"><h2>Branding</h2></div><div class="panel-body">
       <div class="field"><label>App name</label><input id="cfgAppName" class="input" value="${esc(c.app_name || "KryvonWallet")}"></div>
+      <div class="field"><label>Customer wallet on-chain name (TRON)</label>
+        <input id="cfgOnName" class="input" value="${esc(c.customer_onchain_name != null ? c.customer_onchain_name : "KryvonWalletcustodial")}">
+        <div class="hint">Set on each new customer deposit wallet (one-time, permanent on TRON; costs a little TRX). Placeholders: <code>{id}</code>, <code>{username}</code>, <code>{app}</code>. Blank = off.</div>
+        <div class="form-actions" style="margin-top:6px"><button class="btn btn-ghost btn-sm" id="cfgNameExisting">Apply to existing customer wallets</button></div></div>
       ${brandRow("Brand logo (header + QR centre)", "logo", "brand_logo", c.brand_logo)}
       ${brandRow("Favicon", "fav", "favicon", c.favicon)}
       ${brandRow("QR logo (centre of QR — falls back to brand logo)", "qrl", "qr_logo", c.qr_logo)}
@@ -1265,10 +1327,19 @@ async function renderSettings(){
         payout_allowlist_only: $("#cfgAllow").checked,
         auto_distribute_enabled: $("#cfgAuto").checked,
         app_name: $("#cfgAppName").value.trim() || "KryvonWallet",
+        customer_onchain_name: $("#cfgOnName").value.trim(),
         ..._brandPick,
       };
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
       act(() => api("/admin/config", {method:"POST", body}), "Settings saved", () => { applyBranding(); renderSettings(); });
+    };
+    const nameExisting = $("#cfgNameExisting");
+    if (nameExisting) nameExisting.onclick = async () => {
+      const ok = await confirmModal({ title: "Name existing customer wallets", okLabel: "Apply",
+        bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Set the on-chain name on all customer deposit wallets. This is permanent per wallet and costs a little TRX each; already-named wallets are skipped.</p>` });
+      if (!ok) return;
+      try { const r = await api("/wallets/name-customers", { method: "POST" }); toast(`Named ${r.named}, skipped/failed ${r.failed} of ${r.total}`); }
+      catch (e) { toast(e.message, true); }
     };
     document.querySelectorAll(".brand-file").forEach((inp) => inp.onchange = async () => {
       const f = inp.files && inp.files[0]; if (!f) return;
@@ -1334,24 +1405,36 @@ async function makeQrCanvas(address, size){
   return canvas;
 }
 async function composeCard(){
-  const qr = await makeQrCanvas(_qrCur.address, 360);
-  const W = 520, H = 700, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const qr = await makeQrCanvas(_qrCur.address, 300);
+  const W = 560, H = 760, c = document.createElement("canvas"); c.width = W; c.height = H;
   const ctx = c.getContext("2d");
-  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "#0E9F6E"; ctx.fillRect(0, 0, W, 8);
+  ctx.fillStyle = "#EEF2F7"; ctx.fillRect(0, 0, W, H);
+  const m = 24, cardW = W - m * 2, cardH = H - m * 2, cx = m, cy = m;
+  ctx.save(); ctx.shadowColor = "rgba(16,24,40,0.12)"; ctx.shadowBlur = 24; ctx.shadowOffsetY = 8;
+  ctx.fillStyle = "#ffffff"; roundRect(ctx, cx, cy, cardW, cardH, 20); ctx.fill(); ctx.restore();
+  ctx.strokeStyle = "#E7ECF3"; ctx.lineWidth = 1; roundRect(ctx, cx + 0.5, cy + 0.5, cardW - 1, cardH - 1, 20); ctx.stroke();
+  const bandH = 92;
+  ctx.save(); roundRect(ctx, cx, cy, cardW, bandH + 24, 20); ctx.clip();
+  const g = ctx.createLinearGradient(cx, cy, cx + cardW, cy); g.addColorStop(0, "#0FA678"); g.addColorStop(1, "#0A7D5A");
+  ctx.fillStyle = g; ctx.fillRect(cx, cy, cardW, bandH); ctx.restore();
   ctx.textAlign = "center";
   const name = (state.branding && state.branding.app_name) || "KryvonWallet";
-  let y = 46;
   const logo = await loadImg((state.branding && state.branding.brand_logo) || "");
-  if (logo) { const lw = 120, lh = Math.min(64, lw * (logo.height / logo.width || 1)); ctx.drawImage(logo, (W - lw) / 2, y - 24, lw, lh); y += lh; }
-  ctx.fillStyle = "#0B1220"; ctx.font = "700 22px Inter, Arial, sans-serif"; ctx.fillText(name, W / 2, y); y += 10;
-  if (_qrCur.label) { y += 30; ctx.font = "600 19px Inter, Arial, sans-serif"; ctx.fillStyle = "#0B1220"; ctx.fillText(_qrCur.label, W / 2, y); }
-  if (_qrCur.customerName) { y += 24; ctx.font = "400 14px Inter, Arial, sans-serif"; ctx.fillStyle = "#5A6472"; ctx.fillText("Customer: " + _qrCur.customerName, W / 2, y); }
-  y += 26; const qs = 340; ctx.drawImage(qr, (W - qs) / 2, y, qs, qs); y += qs + 34;
+  if (logo) { const lh = 44, lw = Math.min(140, lh * ((logo.width / logo.height) || 1)); ctx.drawImage(logo, (W - lw) / 2, cy + (bandH - lh) / 2, lw, lh); }
+  else { ctx.fillStyle = "#ffffff"; ctx.font = "800 24px Inter, Arial, sans-serif"; ctx.fillText(name, W / 2, cy + bandH / 2 + 8); }
+  let y = cy + bandH + 48;
+  ctx.fillStyle = "#0B1220"; ctx.font = "700 22px Inter, Arial, sans-serif";
+  ctx.fillText(_qrCur.customerName ? ("Pay " + _qrCur.customerName) : (_qrCur.label || "Wallet address"), W / 2, y);
+  if (_qrCur.customerName && _qrCur.label) { y += 24; ctx.font = "500 14px Inter, Arial, sans-serif"; ctx.fillStyle = "#5A6472"; ctx.fillText(_qrCur.label, W / 2, y); }
+  y += 28; const qs = 300, tile = qs + 28, tx = (W - tile) / 2, ty = y;
+  ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#E7ECF3"; roundRect(ctx, tx, ty, tile, tile, 16); ctx.fill(); ctx.stroke();
+  ctx.drawImage(qr, tx + 14, ty + 14, qs, qs); y = ty + tile + 30;
+  ctx.font = "600 12px Inter, Arial, sans-serif"; const pill = "TRC-20 USDT only"; const pw = ctx.measureText(pill).width + 26;
+  ctx.fillStyle = "#E7F6F0"; roundRect(ctx, (W - pw) / 2, y - 17, pw, 27, 13); ctx.fill(); ctx.fillStyle = "#0A7D5A"; ctx.fillText(pill, W / 2, y + 1); y += 36;
   ctx.font = "13px ui-monospace, monospace"; ctx.fillStyle = "#0B1220";
   const a = _qrCur.address, mid = Math.ceil(a.length / 2);
-  ctx.fillText(a.slice(0, mid), W / 2, y); ctx.fillText(a.slice(mid), W / 2, y + 18); y += 42;
-  ctx.font = "12px Inter, Arial, sans-serif"; ctx.fillStyle = "#94A0B0"; ctx.fillText("TRC-20 USDT", W / 2, y);
+  ctx.fillText(a.slice(0, mid), W / 2, y); ctx.fillText(a.slice(mid), W / 2, y + 18);
+  ctx.font = "12px Inter, Arial, sans-serif"; ctx.fillStyle = "#94A0B0"; ctx.fillText("Powered by " + name, W / 2, cy + cardH - 22);
   return c.toDataURL("image/png");
 }
 function cardFileName(){ return ((_qrCur.customerName || _qrCur.label || "wallet") + "").replace(/\s+/g, "-") + "-qr.png"; }

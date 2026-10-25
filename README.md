@@ -177,12 +177,35 @@ payout consume a little TRX.
 
 ## Wallet names
 
+- **In-app name**: every wallet has a Name button to set a display name (and optionally write it
+  on-chain).
+- **Customer wallets on-chain**: new customer deposit wallets are automatically given a per-customer
+  on-chain TRON account name from a template (default **`KryvonWallet-{id}`**; placeholders `{id}`,
+  `{username}`, `{app}`; blank turns it off) — set in Settings → Branding. Use **Apply to existing
+  customer wallets** to name wallets created earlier. A TRON account name can be set only **once**,
+  can't be changed, and costs a little TRX; Tronscan's public *label* is curated separately (see below).
+- **Tronscan public tag**: on the Treasury/Gas wallet rows, **Tronscan** generates the signed
+  ownership proof (message + signature) Tronscan needs to grant a public name tag. See
+  `Tronscan-NameTag-Application.md` for the full application pack and submission steps.
+
 Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You can:
 - set an **in-app display name** (rename anytime; shows throughout the console), and optionally
 - write the name **on-chain** (TRON account name). Note: an on-chain name can be set **only once
   and never changed**, costs a little TRX, and the account must be activated first. Tronscan's
   prominent public label is curated by Tronscan (verified entities apply for it), so a self-set
   on-chain name is not guaranteed to appear there.
+
+## Payment links
+
+Every customer gets a unique **payment link** (Customers → Manage, and the staff "My customers"
+screen). Opening it shows a **public, branded page** — your logo/name, the customer's name, their
+**deposit address and a logo-in-the-middle QR**, and a copy button — so anyone can pay that
+customer in USDT (TRC-20). The link uses an unguessable token (no login, nothing sensitive beyond
+the receive address, which is public). Remittance customers have no deposit address, so their link
+shows a "contact support" message instead.
+
+Share dialogs also produce a polished **branded QR card** (logo-in-QR, wallet/customer name, and
+address) you can download or send.
 
 ## Staff assignments & messaging
 
@@ -198,9 +221,9 @@ Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You c
 A **Backup** page (admin) exports **every wallet** — type (treasury / gas / pool / customer),
 label, address, and **private key** — as a single JSON file, and imports it back:
 
-- **Export** downloads `kryvonwallet-wallets-backup.json`. It contains all private keys, so store
-  it encrypted/offline — anyone with it controls every wallet.
-- **Import** accepts that file (or pasted JSON). It recreates wallets, re-links customer deposit
+- **Export** as **JSON** (`kryvonwallet-wallets-backup.json`) or **CSV** (`...-backup.csv`). Both
+  contain all private keys, so store them encrypted/offline — anyone with them controls every wallet.
+- **Import** accepts a JSON **or CSV** file (or pasted JSON/CSV; CSV columns: `type,label,address,owner,private_key`). It recreates wallets, re-links customer deposit
   wallets to their owner by username, skips any address that already exists and a second treasury,
   and does **not** pre-fund imported wallets (they already hold their on-chain balances).
 

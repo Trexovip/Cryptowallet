@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pay · KryvonWallet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<style>
+  .pay-wrap{min-height:100%;display:grid;place-items:center;padding:24px;
+    background:radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent)}
+  .pay-card{width:100%;max-width:420px;background:var(--surface);border:1px solid var(--line);border-radius:16px;
+    box-shadow:var(--shadow-lg);padding:28px 26px;position:relative;overflow:hidden;text-align:center}
+  .pay-card::before{content:"";position:absolute;inset:0 0 auto;height:5px;background:linear-gradient(90deg,var(--accent),var(--accent-ink))}
+  .pay-brand{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:6px}
+  .pay-mark{width:30px;height:30px;border-radius:9px;background:linear-gradient(145deg,var(--accent),var(--accent-ink));color:#fff;display:grid;place-items:center;font-weight:800}
+  .pay-mark img{width:100%;height:100%;object-fit:contain;border-radius:inherit}
+  .pay-name{font-weight:700;letter-spacing:-.02em;font-size:16px}
+  .pay-h{font-size:19px;font-weight:700;margin:14px 0 2px}
+  .pay-sub{color:var(--muted);font-size:13.5px;margin-bottom:16px}
+  .qr-tile{display:inline-block;background:#fff;padding:14px;border:1px solid var(--line);border-radius:14px;line-height:0}
+  .pay-addr{font-family:var(--mono);font-size:12.5px;word-break:break-all;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:14px;user-select:all}
+  .pay-foot{margin-top:16px;color:var(--faint);font-size:12px}
+  .pay-net{display:inline-block;margin-top:10px;font-size:11.5px;font-weight:600;color:var(--accent-ink);background:var(--accent-soft);border:1px solid var(--accent);border-radius:999px;padding:3px 10px}
+</style>
+</head>
+<body>
+<div class="pay-wrap"><div class="pay-card" id="card"><div class="pay-sub">Loading…</div></div></div>
+<script src="/static/qrcode.min.js"></script>
+<script>
+(async () => {
+  const esc = s => String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+  const token = location.pathname.split("/").filter(Boolean).pop();
+  const card = document.getElementById("card");
+  function loadImg(src){ return new Promise(r=>{ if(!src) return r(null); const i=new Image(); i.onload=()=>r(i); i.onerror=()=>r(null); i.src=src; }); }
+  function roundRect(ctx,x,y,w,h,rr){ ctx.beginPath(); ctx.moveTo(x+rr,y); ctx.arcTo(x+w,y,x+w,y+h,rr); ctx.arcTo(x+w,y+h,x,y+h,rr); ctx.arcTo(x,y+h,x,y,rr); ctx.arcTo(x,y,x+w,y,rr); ctx.closePath(); }
+  async function makeQr(addr, logo, size){
+    const tmp=document.createElement("div");
+    try{ new QRCode(tmp,{text:addr,width:size,height:size,correctLevel:QRCode.CorrectLevel.H}); }catch(e){}
+    let cv=tmp.querySelector("canvas");
+    if(!cv){ const im=tmp.querySelector("img"); cv=document.createElement("canvas"); cv.width=size;cv.height=size; if(im){ await new Promise(r=>{ if(im.complete)r(); else im.onload=r;}); try{cv.getContext("2d").drawImage(im,0,0,size,size);}catch(e){} } }
+    const li=await loadImg(logo);
+    if(li){ const ctx=cv.getContext("2d"); const s=Math.round(size*0.22),x=(size-s)/2,y=(size-s)/2,p=s*0.14; ctx.fillStyle="#fff"; roundRect(ctx,x-p,y-p,s+p*2,s+p*2,8); ctx.fill(); try{ctx.drawImage(li,x,y,s,s);}catch(e){} }
+    return cv;
+  }
+  try{
+    const r = await fetch("/paylink/"+encodeURIComponent(token));
+    if(!r.ok) throw new Error("This payment link is invalid or no longer active.");
+    const d = await r.json();
+    document.title = "Pay " + d.customer_name + " · " + (d.app_name||"KryvonWallet");
+    const logo = d.qr_logo || d.brand_logo || "";
+    const markInner = d.brand_logo ? `<img src="${esc(d.brand_logo)}" alt="">` : "₮";
+    if(!d.addresses || !d.addresses.length){
+      card.innerHTML = `<div class="pay-brand"><div class="pay-mark">${markInner}</div><div class="pay-name">${esc(d.app_name||"KryvonWallet")}</div></div>
+        <div class="pay-h">Pay ${esc(d.customer_name)}</div><div class="pay-sub">No deposit address is available for this account yet. Please contact support.</div>`;
+      return;
+    }
+    const a = d.addresses[0];
+    card.innerHTML = `<div class="pay-brand"><div class="pay-mark">${markInner}</div><div class="pay-name">${esc(d.app_name||"KryvonWallet")}</div></div>
+      <div class="pay-h">Pay ${esc(d.customer_name)}</div>
+      <div class="pay-sub">Scan the QR or copy the address to send <b>USDT (TRC-20)</b>.</div>
+      <div class="qr-tile" id="qr"></div>
+      <div class="pay-net">TRC-20 USDT only</div>
+      <div class="pay-addr" id="addr">${esc(a.address)}</div>
+      <div class="form-actions" style="justify-content:center;margin-top:12px"><button class="btn btn-primary btn-sm" id="copy">Copy address</button></div>
+      <div class="pay-foot">Powered by ${esc(d.app_name||"KryvonWallet")}</div>`;
+    const cv = await makeQr(a.address, logo, 220);
+    const box=document.getElementById("qr"); box.innerHTML=""; box.appendChild(cv);
+    document.getElementById("copy").onclick=()=>navigator.clipboard.writeText(a.address).then(()=>{ const b=document.getElementById("copy"); b.textContent="Copied"; setTimeout(()=>b.textContent="Copy address",1500); });
+  }catch(e){
+    card.innerHTML = `<div class="pay-h">Link unavailable</div><div class="pay-sub">${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

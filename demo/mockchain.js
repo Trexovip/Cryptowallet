@@ -21,6 +21,7 @@ module.exports = {
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
+  async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },
   __name(addr) { return names[addr]; },
   async sendUsdt(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);

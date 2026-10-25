@@ -29,6 +29,7 @@ const DEFAULTS = {
   brand_logo: "",                 // data URL / URL of the header logo
   favicon: "",                    // data URL / URL of the browser favicon
   qr_logo: "",                    // data URL / URL placed in the centre of QR codes
+  customer_onchain_name: "KryvonWallet-{id}", // on-chain TRON name template per customer deposit wallet; {id} {username} {app} ("" = off)
 };
 
 let cfg = null;
