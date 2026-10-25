@@ -4,7 +4,7 @@
 const { getDb } = require("./db");
 const chain = require("./chain");
 const sec = require("./security");
-const { get } = require("./config");
+const { get, save } = require("./config");
 const { getUsdRate } = require("./price");
 
 const now = () => new Date().toISOString();
@@ -176,32 +176,38 @@ async function scanAndSweep() {
   return out;
 }
 
+// Pick the next pool wallet in round-robin rotation (persisted), so each payout rotates
+// to a different wallet instead of always using the same one.
+function nextPoolWallet(pool) {
+  const rotor = Number(get().pool_rotor || 0);
+  const chosen = pool[rotor % pool.length];
+  try { const c = { ...get() }; c.pool_rotor = (rotor + 1) % pool.length; save(c); } catch { /* best-effort */ }
+  return chosen;
+}
+
 // Return a single pool wallet holding at least `need` USDT, ready to pay out.
-// 1) If a pool wallet already covers it, use it (random among those).
-// 2) Otherwise consolidate into one wallet: pull from the treasury first (the reserve),
-//    then from other pool wallets, until it covers the amount. Throws clearly if the total
-//    liquidity across treasury + pool can't cover it.
+// Wallets are used in ROUND-ROBIN order. If the rotated wallet is short, top it up by
+// consolidating from the treasury (the reserve) first, then from other pool wallets.
 async function ensurePoolFunded(need, usdRate = null) {
   const db = getDb();
-  const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all();
+  const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1 ORDER BY id").all();
   if (!pool.length) throw new Error("disbursement pool is empty — provision it first");
 
+  // round-robin selection — advances every payout
+  const target = nextPoolWallet(pool);
+  let have = 0; try { have = await chain.usdtBalance(target.address); } catch { have = 0; }
+  if (have + 1e-9 >= need) return target;
+
+  // top up the rotated wallet: treasury first, then the other pool wallets (richest first)
+  const others = pool.filter((w) => w.id !== target.id);
   const bals = [];
-  for (const w of pool) { let b = 0; try { b = await chain.usdtBalance(w.address); } catch { b = 0; } bals.push({ w, b }); }
-
-  // 1) a single wallet already has enough → random among those
-  const covering = bals.filter((x) => x.b + 1e-9 >= need);
-  if (covering.length) return covering[Math.floor(Math.random() * covering.length)].w;
-
-  // 2) consolidate into the wallet with the most USDT (fewest transfers)
+  for (const w of others) { let b = 0; try { b = await chain.usdtBalance(w.address); } catch { b = 0; } bals.push({ w, b }); }
   bals.sort((a, b) => b.b - a.b);
-  const target = bals[0].w;
-  let have = bals[0].b;
 
   const sources = [];
   const treasury = getTreasury();
   if (treasury) { let tb = 0; try { tb = await chain.usdtBalance(treasury.address); } catch { tb = 0; } sources.push({ w: treasury, b: tb }); }
-  for (let i = 1; i < bals.length; i++) sources.push(bals[i]);
+  for (const x of bals) sources.push(x);
 
   for (const s of sources) {
     if (have + 1e-9 >= need) break;

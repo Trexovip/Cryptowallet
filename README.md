@@ -159,6 +159,8 @@ and **reset a user's password**.
 
 ## How a payout is funded
 
+Payouts **rotate through the pool wallets in round-robin order** — each payout uses the next wallet, not always the first. If the rotated wallet is short, it's topped up (treasury first, then other pool wallets) and then pays out.
+
 ## How a payout is funded
 
 Every payout reaches the recipient in **one on-chain transfer from a single pool wallet** (never
