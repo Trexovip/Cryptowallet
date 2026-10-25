@@ -195,6 +195,16 @@ Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You c
   prominent public label is curated by Tronscan (verified entities apply for it), so a self-set
   on-chain name is not guaranteed to appear there.
 
+## Managing wallets (import, remove, re-add)
+
+- **Import to a customer**: a customer's **Manage** page has *Import a deposit wallet* (add an
+  existing address as that customer's deposit wallet). The admin **Wallets → Import** panel also has
+  an *Owner* picker (staff or customer) for deposit imports.
+- **Remove / re-add**: every wallet has a **Remove** action — a soft-delete that stops the wallet
+  receiving sweeps or sending payouts while keeping its history. Removed wallets appear in a
+  **Removed wallets** section with **Re-add**. Only one active treasury and one active gas wallet are
+  allowed at a time.
+
 ## Payment links
 
 Every customer gets a unique **payment link** (Customers → Manage, and the staff "My customers"

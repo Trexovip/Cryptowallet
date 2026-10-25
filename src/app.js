@@ -459,12 +459,40 @@ app.post("/wallets/:id/ownership-proof", currentUser, adminRequired, wrap(async 
 }));
 
 // Import an existing private key as a wallet (admin only).
+// Remove (deactivate) a wallet — soft delete, keeps history; excluded from sweeps/payouts.
+app.post("/wallets/:id/deactivate", currentUser, adminRequired, wrap(async (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  getDb().prepare("UPDATE wallets SET is_active=0 WHERE id=?").run(w.id);
+  svc.audit(req.user.id, "deactivate_wallet", `${w.wtype} ${w.address}`, ip(req));
+  res.json({ ok: true });
+}));
+
+// Re-add (reactivate) a previously removed wallet.
+app.post("/wallets/:id/activate", currentUser, adminRequired, wrap(async (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  if (w.wtype === "treasury" || w.wtype === "fee") {
+    const other = getDb().prepare("SELECT 1 FROM wallets WHERE wtype=? AND is_active=1 AND id<>?").get(w.wtype, w.id);
+    if (other) return res.status(400).json({ detail: `an active ${w.wtype === "fee" ? "gas" : w.wtype} wallet already exists — remove it first` });
+  }
+  getDb().prepare("UPDATE wallets SET is_active=1 WHERE id=?").run(w.id);
+  svc.audit(req.user.id, "activate_wallet", `${w.wtype} ${w.address}`, ip(req));
+  res.json({ ok: true });
+}));
+
 app.post("/wallets/import", currentUser, adminRequired, wrap(async (req, res) => {
   const { private_key, wtype, label, owner_user_id } = req.body || {};
   if (!private_key) return res.status(400).json({ detail: "private_key required" });
   if (!["treasury", "fee", "disbursement", "deposit"].includes(wtype)) return res.status(400).json({ detail: "invalid wallet type" });
   if (wtype === "treasury" && svc.getTreasury()) return res.status(400).json({ detail: "treasury already exists" });
-  const w = await svc.importWallet(String(private_key), wtype, owner_user_id || null, String(label || "imported"));
+  let owner = null;
+  if (owner_user_id) {
+    const u = getDb().prepare("SELECT id FROM users WHERE id=?").get(owner_user_id);
+    if (!u) return res.status(404).json({ detail: "owner user not found" });
+    owner = u.id;
+  }
+  const w = await svc.importWallet(String(private_key), wtype, owner, String(label || "imported"));
   svc.audit(req.user.id, "import_wallet", `${wtype} ${w.address}`, ip(req));
   res.json(walletOut(w));
 }));

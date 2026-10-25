@@ -254,3 +254,14 @@ select.input{appearance:none;background-image:linear-gradient(45deg,transparent 
 .rc-warn b{color:var(--ink)}
 .rc-warn-ic{flex:0 0 auto;width:20px;height:20px;border-radius:50%;border:1px solid var(--line-strong);
   display:grid;place-items:center;font-size:12px;font-style:italic;font-weight:700;color:var(--muted);margin-top:1px}
+
+/* ---------- professional polish ---------- */
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-danger:hover{filter:brightness(1.08)}
+.panel-head{background:color-mix(in srgb,var(--surface-2) 55%,transparent)}
+.page-head h1{font-size:25px}
+.nav a.active .ic{opacity:1}
+.set-sec{display:flex;align-items:center;gap:12px;margin:28px 2px 14px;color:var(--faint);
+  font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase}
+.set-sec::after{content:"";flex:1;height:1px;background:var(--line)}
+#stBody > .set-sec:first-child{margin-top:2px}

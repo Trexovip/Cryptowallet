@@ -226,16 +226,19 @@ async function renderWallets(){
     <p>Treasury, gas, disbursement pool, and per-staff deposit addresses.</p></div></div>
     <div id="wBody">Loading…</div>`;
   try{
-    const [wallets, users, settings, book] = await Promise.all([
-      api("/wallets"), api("/users"), api("/settings"), api("/address-book").catch(() => [])
+    const [wallets, users, settings, book, customers] = await Promise.all([
+      api("/wallets"), api("/users"), api("/settings"), api("/address-book").catch(() => []), api("/customers").catch(() => [])
     ]);
-    const byType = t => wallets.filter(w => w.wtype === t);
+    const active = wallets.filter(w => w.is_active);
+    const inactive = wallets.filter(w => !w.is_active);
+    const byType = t => active.filter(w => w.wtype === t);
     const treasury = byType("treasury")[0];
     const fee = byType("fee")[0];
     const pool = byType("disbursement");
     const deposits = byType("deposit");
     const staff = users.filter(u => u.role === "staff");
-    const uname = id => (users.find(u => u.id === id) || {}).username || "—";
+    const uname = id => (users.find(u => u.id === id) || customers.find(c => c.id === id) || {}).username || "—";
+    const fr = t => ({ treasury: "Treasury", fee: "Gas", disbursement: "Pool", deposit: "Deposit" }[t] || t);
 
     $("#wBody").innerHTML = `
     <div class="panel"><div class="panel-head"><h2>Treasury (master)</h2>
@@ -247,6 +250,7 @@ async function renderWallets(){
            <button class="btn btn-ghost btn-sm" data-wname="${treasury.id}" data-wlabel="${esc(treasury.label||'')}">Name</button>
            <button class="btn btn-ghost btn-sm" data-proof="${treasury.id}">Tronscan</button>
            <button class="btn btn-ghost btn-sm" data-qr="${esc(treasury.address)}" data-qrlabel="${esc(treasury.label||'treasury')}">QR</button>
+           <button class="btn btn-ghost btn-sm wdeact" data-id="${treasury.id}" data-kind="treasury">Remove</button>
            <span class="hint" id="bal-${treasury.id}"></span></div>`
         : `<span class="hint">Deposits are swept here automatically. Keep the bulk of funds in cold storage.</span>`}
       </div></div>
@@ -279,6 +283,7 @@ async function renderWallets(){
            <button class="btn btn-ghost btn-sm" data-wname="${fee.id}" data-wlabel="${esc(fee.label||'')}">Name</button>
            <button class="btn btn-ghost btn-sm" data-proof="${fee.id}">Tronscan</button>
            <button class="btn btn-ghost btn-sm" data-qr="${esc(fee.address)}" data-qrlabel="${esc(fee.label||'gas wallet')}">QR</button>
+           <button class="btn btn-ghost btn-sm wdeact" data-id="${fee.id}" data-kind="fee">Remove</button>
            <span class="hint" id="bal-${fee.id}"></span></div>`
         : `<span class="hint">Needed to pay the network fee when sweeping TRC-20 deposits.</span>`}
       </div></div>
@@ -288,10 +293,11 @@ async function renderWallets(){
         <input id="poolCount" class="input" style="width:72px" type="number" min="1" max="50" value="5">
         <button class="btn btn-primary btn-sm" id="mkPool">Add wallets</button></div></div>
       <div class="panel-body flush">${pool.length
-        ? `<table><thead><tr><th>Label</th><th>Address</th><th class="amt">USDT</th><th></th></tr></thead><tbody>
+        ? `<table><thead><tr><th>Label</th><th>Address</th><th class="amt">USDT</th><th class="amt">TRX</th><th></th></tr></thead><tbody>
            ${pool.map(w => `<tr><td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
              <td class="amt num" id="pbal-${w.id}">—</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button></td></tr>`).join("")}
+             <td class="amt num" id="ptrx-${w.id}">—</td>
+             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}" data-trxcell="ptrx-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="pool">Remove</button></td></tr>`).join("")}
            </tbody></table>`
         : emptyState("No pool wallets yet. Payouts draw from these, topped up from treasury.")}
       </div></div>
@@ -313,9 +319,15 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th><th></th></tr></thead><tbody>
            ${deposits.map(w => `<tr><td>${esc(uname(w.owner_user_id))}</td>
              <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button></td></tr>`).join("")}</tbody></table>`
+             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="deposit">Remove</button></td></tr>`).join("")}</tbody></table>`
         : emptyState("No deposit addresses yet.")}
       </div></div>
+
+    ${inactive.length?`<div class="panel"><div class="panel-head"><h2>Removed wallets (${inactive.length})</h2></div><div class="panel-body flush">
+      <table><thead><tr><th>Type</th><th>Owner</th><th>Address</th><th></th></tr></thead><tbody>
+      ${inactive.map(w=>`<tr><td>${esc(fr(w.wtype))}</td><td>${esc(uname(w.owner_user_id))}</td><td>${addrHtml(w.address)}</td>
+        <td class="row-actions"><button class="btn btn-ghost btn-sm wact" data-id="${w.id}">Re-add</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button></td></tr>`).join("")}
+      </tbody></table></div></div>`:""}
 
     <div class="panel"><div class="panel-head"><h2>Import a wallet <span class="role-pill">admin</span></h2></div><div class="panel-body">
       <div class="form-grid">
@@ -325,6 +337,10 @@ async function renderWallets(){
           <option value="fee">Gas wallet</option>
           <option value="treasury">Treasury (only if none)</option>
           <option value="deposit">Deposit wallet</option></select></div>
+        <div class="field"><label>Owner (deposit only)</label><select id="impOwner" class="input"><option value="">— none —</option>
+          ${staff.length?`<optgroup label="Staff">${staff.map(u=>`<option value="${u.id}">${esc(u.username)}</option>`).join("")}</optgroup>`:""}
+          ${customers.length?`<optgroup label="Customers">${customers.map(c=>`<option value="${c.id}">${esc(c.username)}</option>`).join("")}</optgroup>`:""}
+        </select></div>
       </div>
       <div class="field"><label>Label (optional)</label><input id="impLabel" class="input" placeholder="e.g. cold-storage import"></div>
       <button class="btn btn-primary" id="impBtn">Import wallet</button>
@@ -370,8 +386,18 @@ function wireWalletActions(){
   on("impBtn", () => {
     const private_key = $("#impKey").value.trim();
     if (!private_key) return toast("Enter a private key", true);
-    act(() => api("/wallets/import", {method:"POST", body:{ private_key, wtype: $("#impType").value, label: $("#impLabel").value.trim() }}), "Wallet imported", renderWallets);
+    const wtype = $("#impType").value;
+    const body = { private_key, wtype, label: $("#impLabel").value.trim() };
+    if (wtype === "deposit") { const o = $("#impOwner") && $("#impOwner").value; if (o) body.owner_user_id = Number(o); }
+    act(() => api("/wallets/import", {method:"POST", body}), "Wallet imported", renderWallets);
   });
+  document.querySelectorAll(".wdeact").forEach(b => b.onclick = async () => {
+    const kind = b.dataset.kind, critical = kind === "treasury" || kind === "fee";
+    const ok = await confirmModal({ title: "Remove wallet", okLabel: "Remove", okClass: "btn-danger",
+      bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">This removes the wallet from active use — it won't receive sweeps or send payouts. History is kept and you can re-add it later.${critical ? " <b>Move any funds out first.</b>" : ""}</p>` });
+    if (ok) act(() => api(`/wallets/${b.dataset.id}/deactivate`, { method: "POST" }), "Wallet removed", renderWallets);
+  });
+  document.querySelectorAll(".wact").forEach(b => b.onclick = () => act(() => api(`/wallets/${b.dataset.id}/activate`, { method: "POST" }), "Wallet re-added", renderWallets));
   document.querySelectorAll(".bal").forEach(b => b.onclick = async () => {
     const id = b.dataset.id, cell = b.dataset.cell;
     b.disabled = true; const prev = b.textContent; b.textContent = "…";
@@ -379,6 +405,7 @@ function wireWalletActions(){
       const r = await api(`/wallets/${id}/balance`);
       const txt = `${fmtUsdt(r.usdt)} USDT · ${fmtTrx(r.native)} TRX`;
       if (cell) $("#"+cell).textContent = fmtUsdt(r.usdt);
+      if (b.dataset.trxcell) { const tc = $("#"+b.dataset.trxcell); if (tc) tc.textContent = fmtTrx(r.native); }
       const hint = $("#bal-"+id); if (hint) hint.textContent = txt;
       if (!cell && !hint) toast(txt);
     }catch(e){ toast(e.message, true); }
@@ -852,7 +879,22 @@ async function openCustomer(id){
         <div class="hint" style="margin-top:6px">Share with anyone who needs to pay ${esc(c.username)} — a branded page with their deposit address and QR.</div>`
         : `<div class="hint">A payment link needs a deposit address${c.customer_type === "remittance" ? " (remittance customers receive payouts, not deposits)" : ""}.</div>`}
     </div></div>`;
-    d.innerHTML = main + staffPanel + commsPanel + payPanel;
+    const importPanel = `<div class="panel"><div class="panel-head"><h2>Import a deposit wallet</h2></div><div class="panel-body">
+      <div class="form-grid">
+        <div class="field"><label>Private key</label><input id="cimpKey" class="input mono" placeholder="existing TRON private key"></div>
+        <div class="field"><label>Label (optional)</label><input id="cimpLabel" class="input" placeholder="e.g. migrated address"></div>
+      </div>
+      <button class="btn btn-primary btn-sm" id="cimpBtn">Import for ${esc(c.username)}</button>
+      <div class="hint" style="margin-top:6px">Adds an existing address as this customer's deposit wallet. The key is encrypted at rest.</div>
+    </div></div>`;
+    d.innerHTML = main + staffPanel + commsPanel + payPanel + importPanel;
+
+    const cimp = $("#cimpBtn");
+    if (cimp) cimp.onclick = () => {
+      const private_key = $("#cimpKey").value.trim();
+      if (!private_key) return toast("Enter a private key", true);
+      act(() => api("/wallets/import", { method: "POST", body: { private_key, wtype: "deposit", owner_user_id: id, label: $("#cimpLabel").value.trim() } }), "Wallet imported", () => openCustomer(id));
+    };
 
     if (c.customer_type === "remittance") {
       document.querySelectorAll(".wl-del").forEach(b => b.onclick = () =>
@@ -1229,6 +1271,7 @@ async function renderSettings(){
   try{
     const c = await api("/admin/config");
     $("#stBody").innerHTML = `
+    <div class="set-sec">Policy &amp; operations</div>
     <div class="panel"><div class="panel-head"><h2>Payout &amp; deposit policy</h2></div><div class="panel-body">
       <div class="form-grid">
         <div class="field"><label>Default staff auto-approve limit (USDT)</label>
@@ -1242,6 +1285,7 @@ async function renderSettings(){
         <input id="cfgHold" class="input" type="number" step="1" min="0" max="100" value="${esc(c.treasury_hold_percent)}"></div>
     </div></div>
 
+    <div class="set-sec">Network &amp; integrations</div>
     <div class="panel"><div class="panel-head"><h2>Network &amp; keys</h2></div><div class="panel-body">
       <div class="form-grid">
         <div class="field"><label>Network</label><select id="cfgNet" class="input">
@@ -1280,6 +1324,7 @@ async function renderSettings(){
       <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAuto" ${c.auto_distribute_enabled ? "checked" : ""}> Auto-distribute treasury surplus to the pool periodically</label></div>
     </div></div>
 
+    <div class="set-sec">Fees &amp; energy</div>
     <div class="panel"><div class="panel-head"><h2>Gas &amp; energy</h2></div><div class="panel-body">
       <div class="hint" style="margin-bottom:10px">USDT (TRC-20) transfers cost <b>Energy</b>. Without energy, TRON burns TRX per transfer (expensive). Use staked or rented energy to cut fees dramatically.</div>
       <div class="field"><label>Fee strategy</label>
@@ -1298,6 +1343,7 @@ async function renderSettings(){
       <div class="hint" style="margin-top:6px">Staking freezes TRX on the gas wallet to produce energy (reversible by unstaking; TRON enforces an unstake waiting period). Delegation to the sending wallet happens automatically on each transfer.</div>
     </div></div>
 
+    <div class="set-sec">Appearance</div>
     <div class="panel"><div class="panel-head"><h2>Branding</h2></div><div class="panel-body">
       <div class="field"><label>App name</label><input id="cfgAppName" class="input" value="${esc(c.app_name || "KryvonWallet")}"></div>
       <div class="field"><label>Customer wallet on-chain name (TRON)</label>
@@ -1310,6 +1356,7 @@ async function renderSettings(){
       <div class="hint">PNG/SVG, square works best, keep under ~500 KB.</div>
     </div></div>
 
+    <div class="set-sec">Security &amp; access</div>
     <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
