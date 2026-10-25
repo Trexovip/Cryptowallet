@@ -74,4 +74,9 @@ async function listIncomingUsdt(address, limit = 50) {
   }));
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt };
+function addressFromPrivateKey(privHex) {
+  try { return base().address.fromPrivateKey(String(privHex).replace(/^0x/, "")); }
+  catch { return null; }
+}
+
+module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey };

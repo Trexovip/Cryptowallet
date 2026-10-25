@@ -80,6 +80,17 @@ function getDb() {
       created_by INTEGER,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT DEFAULT '',
+      key_hash TEXT NOT NULL,
+      prefix TEXT NOT NULL,
+      scopes TEXT DEFAULT '',
+      created_by INTEGER,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      last_used TEXT,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS audit_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
@@ -98,6 +109,8 @@ function getDb() {
   if (!ucols.includes("auto_approve_limit")) db.exec("ALTER TABLE users ADD COLUMN auto_approve_limit REAL");
   const dcols = db.prepare("PRAGMA table_info(disbursement_requests)").all().map((c) => c.name);
   if (!dcols.includes("customer_id")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN customer_id INTEGER");
+  if (!dcols.includes("idempotency_key")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN idempotency_key TEXT");
+  if (!dcols.includes("first_approver")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN first_approver INTEGER");
 
   return db;
 }

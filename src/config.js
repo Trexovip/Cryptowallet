@@ -20,6 +20,10 @@ const DEFAULTS = {
   staff_auto_approve_limit: 0,   // staff payouts <= this (USDT) skip approval; 0 = always require approval
   treasury_hold_percent: 10,     // % of treasury kept back when distributing to the pool
   deposit_fee_percent: 0,        // operator fee % shown on deposit receipts (net credited = amount - fee)
+  dual_control_threshold: 0,     // payouts >= this (USDT) need a 2nd admin approval; 0 = off
+  webhook_url: "",               // POST deposit/payout events here; "" = disabled
+  payout_allowlist_only: false,  // if true, pool payouts only to address-book / whitelisted addresses
+  auto_distribute_enabled: false, // worker periodically distributes treasury surplus to the pool
 };
 
 let cfg = null;

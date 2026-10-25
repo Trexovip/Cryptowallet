@@ -53,7 +53,7 @@ function buildReceipt(m, network) {
   }
   return out;
 }
-const disbOut = (d) => ({ id: d.id, customer_id: d.customer_id, to_address: d.to_address, amount: d.amount, status: d.status, from_wallet_id: d.from_wallet_id, tx_hash: d.tx_hash, created_at: d.created_at });
+const disbOut = (d) => ({ id: d.id, customer_id: d.customer_id, to_address: d.to_address, amount: d.amount, status: d.status, from_wallet_id: d.from_wallet_id, tx_hash: d.tx_hash, created_at: d.created_at, first_approver: d.first_approver || null, awaiting_second_approval: !!(d.first_approver && !d.tx_hash && d.status === "pending") });
 const userName = (id) => { if (!id) return null; const u = getDb().prepare("SELECT username FROM users WHERE id=?").get(id); return u ? u.username : null; };
 function txOut(m) {
   const o = moveOut(m);
@@ -61,6 +61,11 @@ function txOut(m) {
   const rate = m.usd_rate != null ? Number(m.usd_rate) : null;
   o.amount_usd = (m.token === "TRX" || rate == null) ? null : Number((Number(m.amount) * rate).toFixed(2));
   return o;
+}
+function addressAllowed(addr) {
+  if (getDb().prepare("SELECT 1 FROM address_book WHERE address=? AND is_active=1").get(addr)) return true;
+  if (getDb().prepare("SELECT 1 FROM customer_whitelist WHERE address=? AND is_active=1").get(addr)) return true;
+  return false;
 }
 
 // ---------------- setup gating ----------------
@@ -155,11 +160,25 @@ const wrap = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((e) =>
   res.status(400).json({ detail: e.message || "request failed" }));
 
 // ---------------- auth ----------------
+const LOGIN_MAX = 5, LOGIN_WINDOW_MS = 15 * 60 * 1000, LOGIN_LOCK_MS = 15 * 60 * 1000;
+const loginFails = new Map();
 app.post("/auth/login", (req, res) => {
   const { username, password } = req.body || {};
-  const u = getDb().prepare("SELECT * FROM users WHERE username=?").get(String(username || ""));
-  if (!u || !u.is_active || !sec.verifyPassword(String(password || ""), u.password_hash))
+  const uname = String(username || "");
+  const key = uname + "|" + ip(req);
+  const now = Date.now();
+  const rec = loginFails.get(key);
+  if (rec && rec.lockUntil && now < rec.lockUntil)
+    return res.status(429).json({ detail: "too many failed attempts — try again later" });
+  const u = getDb().prepare("SELECT * FROM users WHERE username=?").get(uname);
+  if (!u || !u.is_active || !sec.verifyPassword(String(password || ""), u.password_hash)) {
+    const r = (rec && now - rec.firstAt < LOGIN_WINDOW_MS) ? rec : { count: 0, firstAt: now };
+    r.count++;
+    if (r.count >= LOGIN_MAX) r.lockUntil = now + LOGIN_LOCK_MS;
+    loginFails.set(key, r);
     return res.status(401).json({ detail: "bad username or password" });
+  }
+  loginFails.delete(key);
   svc.audit(u.id, "login", "", ip(req));
   res.json({ access_token: sec.signToken(u), token_type: "bearer" });
 });
@@ -273,6 +292,27 @@ app.get("/wallets/:id/balance", currentUser, wrap(async (req, res) => {
   });
 }));
 
+// Reveal a wallet's private key (admin only, audited). For backup / import / migration.
+app.get("/wallets/:id/secret", currentUser, adminRequired, (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  let pk;
+  try { pk = sec.decryptSecret(w.enc_privkey); } catch { return res.status(500).json({ detail: "could not decrypt key" }); }
+  svc.audit(req.user.id, "reveal_private_key", `${w.wtype} ${w.address}`, ip(req));
+  res.json({ address: w.address, wtype: w.wtype, private_key: pk });
+});
+
+// Import an existing private key as a wallet (admin only).
+app.post("/wallets/import", currentUser, adminRequired, wrap(async (req, res) => {
+  const { private_key, wtype, label, owner_user_id } = req.body || {};
+  if (!private_key) return res.status(400).json({ detail: "private_key required" });
+  if (!["treasury", "fee", "disbursement", "deposit"].includes(wtype)) return res.status(400).json({ detail: "invalid wallet type" });
+  if (wtype === "treasury" && svc.getTreasury()) return res.status(400).json({ detail: "treasury already exists" });
+  const w = await svc.importWallet(String(private_key), wtype, owner_user_id || null, String(label || "imported"));
+  svc.audit(req.user.id, "import_wallet", `${wtype} ${w.address}`, ip(req));
+  res.json(walletOut(w));
+}));
+
 // ---------------- disbursements ----------------
 app.post("/disbursements", currentUser, staffOrAdmin, wrap(async (req, res) => {
   const { to_address, amount, reason, customer_id } = req.body || {};
@@ -295,6 +335,8 @@ app.post("/disbursements", currentUser, staffOrAdmin, wrap(async (req, res) => {
     custId = Number(customer_id);
   }
   if (!dest) return res.status(400).json({ detail: "recipient address required" });
+  if (config.get().payout_allowlist_only && !addressAllowed(dest))
+    return res.status(400).json({ detail: "allow-list mode is on — destination must be in the address book or a customer whitelist" });
   const info = getDb().prepare(
     "INSERT INTO disbursement_requests(staff_user_id,customer_id,to_address,amount,status,reason,created_at) VALUES(?,?,?,?,'pending',?,?)"
   ).run(req.user.id, custId, dest, String(amount), String(reason || ""), new Date().toISOString());
@@ -325,6 +367,15 @@ app.post("/disbursements/:id/approve", currentUser, adminRequired, wrap(async (r
   const reqRow = getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.params.id);
   if (!reqRow) return res.status(404).json({ detail: "request not found" });
   if (reqRow.status !== "pending" || reqRow.tx_hash) return res.status(400).json({ detail: "request already processed" });
+  const threshold = Number(config.get().dual_control_threshold || 0);
+  if (threshold > 0 && Number(reqRow.amount) >= threshold) {
+    if (!reqRow.first_approver) {
+      getDb().prepare("UPDATE disbursement_requests SET first_approver=? WHERE id=?").run(req.user.id, reqRow.id);
+      svc.audit(req.user.id, "disbursement_first_approval", `req#${reqRow.id} (awaiting 2nd approval)`, ip(req));
+      return res.json(disbOut(getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqRow.id)));
+    }
+    if (reqRow.first_approver === req.user.id) return res.status(400).json({ detail: "a different admin must give the second approval" });
+  }
   const updated = await svc.executeDisbursement(reqRow, req.user.id);
   svc.audit(req.user.id, "disbursement_approve", `req#${updated.id} tx=${updated.tx_hash} from_wallet=${updated.from_wallet_id}`, ip(req));
   res.json(disbOut(updated));
@@ -477,6 +528,10 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     treasury_hold_percent: Number(c.treasury_hold_percent != null ? c.treasury_hold_percent : 10),
     staff_auto_approve_limit: Number(c.staff_auto_approve_limit || 0),
     deposit_fee_percent: Number(c.deposit_fee_percent || 0),
+    dual_control_threshold: Number(c.dual_control_threshold || 0),
+    webhook_url: c.webhook_url || "",
+    payout_allowlist_only: !!c.payout_allowlist_only,
+    auto_distribute_enabled: !!c.auto_distribute_enabled,
     setup_at: c.setup_at || null,
   });
 });
@@ -490,17 +545,125 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   }
   if (b.usdt_contract !== undefined) { const v = String(b.usdt_contract || "").trim(); if (!v) return res.status(400).json({ detail: "contract required" }); c.usdt_contract = v; }
   if (b.trongrid_api_key !== undefined) { const v = String(b.trongrid_api_key || "").trim(); if (v) c.trongrid_api_key = v; } // blank = keep existing
-  for (const k of ["sweep_min_usdt", "gas_fund_trx", "disbursement_float_usdt", "poll_interval_seconds", "treasury_hold_percent", "staff_auto_approve_limit", "deposit_fee_percent"]) {
+  for (const k of ["sweep_min_usdt", "gas_fund_trx", "disbursement_float_usdt", "poll_interval_seconds", "treasury_hold_percent", "staff_auto_approve_limit", "deposit_fee_percent", "dual_control_threshold"]) {
     if (b[k] !== undefined) {
       const n = num(b[k]); if (n === null) return res.status(400).json({ detail: "invalid " + k });
       if ((k === "treasury_hold_percent" || k === "deposit_fee_percent") && n > 100) return res.status(400).json({ detail: k + " must be 0–100" });
       c[k] = n;
     }
   }
+  if (b.webhook_url !== undefined) c.webhook_url = String(b.webhook_url || "").trim();
+  if (b.payout_allowlist_only !== undefined) c.payout_allowlist_only = !!b.payout_allowlist_only;
+  if (b.auto_distribute_enabled !== undefined) c.auto_distribute_enabled = !!b.auto_distribute_enabled;
   if (c.tron_network === "mainnet" && !c.trongrid_api_key) return res.status(400).json({ detail: "mainnet requires a TronGrid API key" });
   config.save(c);
   svc.audit(req.user.id, "update_config", `network=${c.tron_network} contract=${c.usdt_contract}`, ip(req));
   res.json({ ok: true });
+});
+
+// ---------------- API keys (admin manages; external systems use them) ----------------
+const API_SCOPES = ["read", "deposits", "payouts"];
+app.post("/apikeys", currentUser, adminRequired, (req, res) => {
+  const { name, scopes } = req.body || {};
+  const scopeList = Array.isArray(scopes) ? scopes.filter((s) => API_SCOPES.includes(s)) : [];
+  if (!scopeList.length) return res.status(400).json({ detail: "select at least one scope" });
+  const key = sec.generateApiKey();
+  getDb().prepare("INSERT INTO api_keys(name,key_hash,prefix,scopes,created_by,is_active,created_at) VALUES(?,?,?,?,?,1,?)")
+    .run(String(name || ""), sec.hashApiKey(key), key.slice(0, 11), scopeList.join(","), req.user.id, new Date().toISOString());
+  svc.audit(req.user.id, "apikey_create", `${name || ""} [${scopeList.join(",")}]`, ip(req));
+  res.json({ key, prefix: key.slice(0, 11), scopes: scopeList, note: "Save this key now — it will not be shown again." });
+});
+app.get("/apikeys", currentUser, adminRequired, (_req, res) => {
+  res.json(getDb().prepare("SELECT id,name,prefix,scopes,is_active,last_used,created_at FROM api_keys ORDER BY id DESC").all()
+    .map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, scopes: (k.scopes || "").split(",").filter(Boolean), is_active: !!k.is_active, last_used: k.last_used, created_at: k.created_at })));
+});
+app.post("/apikeys/:id/revoke", currentUser, adminRequired, (req, res) => {
+  const k = getDb().prepare("SELECT * FROM api_keys WHERE id=?").get(req.params.id);
+  if (!k) return res.status(404).json({ detail: "not found" });
+  getDb().prepare("UPDATE api_keys SET is_active=0 WHERE id=?").run(k.id);
+  svc.audit(req.user.id, "apikey_revoke", k.prefix, ip(req));
+  res.json({ ok: true });
+});
+
+// ---------------- programmatic API (X-API-Key) ----------------
+function apiAuth(req, res, next) {
+  const key = req.headers["x-api-key"];
+  if (!key) return res.status(401).json({ detail: "missing X-API-Key" });
+  const row = getDb().prepare("SELECT * FROM api_keys WHERE key_hash=? AND is_active=1").get(sec.hashApiKey(String(key)));
+  if (!row) return res.status(401).json({ detail: "invalid API key" });
+  getDb().prepare("UPDATE api_keys SET last_used=? WHERE id=?").run(new Date().toISOString(), row.id);
+  req.apiKey = { id: row.id, name: row.name, scopes: (row.scopes || "").split(",").filter(Boolean), created_by: row.created_by };
+  next();
+}
+const requireScope = (s) => (req, res, next) =>
+  req.apiKey && req.apiKey.scopes.includes(s) ? next() : res.status(403).json({ detail: `API key lacks '${s}' scope` });
+
+app.get("/api/v1/ping", apiAuth, (req, res) => res.json({ ok: true, name: req.apiKey.name, scopes: req.apiKey.scopes }));
+
+app.get("/api/v1/wallets/:address/balance", apiAuth, requireScope("read"), wrap(async (req, res) => {
+  const chain = require("./chain");
+  res.json({ address: req.params.address, usdt: String(await chain.usdtBalance(req.params.address)), native: String(await chain.nativeBalance(req.params.address)) });
+}));
+
+app.post("/api/v1/deposit-wallets", apiAuth, requireScope("deposits"), wrap(async (req, res) => {
+  const { customer_id, label } = req.body || {};
+  let owner = null;
+  if (customer_id) {
+    const c = getDb().prepare("SELECT * FROM users WHERE id=? AND role='customer'").get(customer_id);
+    if (!c) return res.status(404).json({ detail: "customer not found" });
+    owner = c.id;
+  }
+  const w = await svc.createWallet("deposit", owner, String(label || "api"));
+  svc.audit(req.apiKey.created_by, "create_deposit_wallet", `${w.address} (via API ${req.apiKey.name})`, ip(req));
+  res.json({ address: w.address, chain: w.chain, owner_user_id: w.owner_user_id, label: w.label });
+}));
+
+app.get("/api/v1/transactions", apiAuth, requireScope("read"), (req, res) => {
+  const limit = Math.min(1000, parseInt(req.query.limit, 10) || 100);
+  res.json(getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit).map(txOut));
+});
+
+app.post("/api/v1/payouts", apiAuth, requireScope("payouts"), wrap(async (req, res) => {
+  const { to_address, amount, reason, idempotency_key } = req.body || {};
+  if (!to_address) return res.status(400).json({ detail: "to_address required" });
+  if (!(Number(amount) > 0)) return res.status(400).json({ detail: "amount must be positive" });
+  if (config.get().payout_allowlist_only && !addressAllowed(String(to_address)))
+    return res.status(400).json({ detail: "allow-list mode is on — destination not allowed" });
+  const creator = req.apiKey.created_by;
+  if (idempotency_key) {
+    const existing = getDb().prepare("SELECT * FROM disbursement_requests WHERE idempotency_key=?").get(String(idempotency_key));
+    if (existing) return res.json(disbOut(existing));
+  }
+  const info = getDb().prepare("INSERT INTO disbursement_requests(staff_user_id,to_address,amount,status,reason,idempotency_key,created_at) VALUES(?,?,?,'pending',?,?,?)")
+    .run(creator, String(to_address), String(amount), String(reason || `api ${req.apiKey.name}`), idempotency_key ? String(idempotency_key) : null, new Date().toISOString());
+  const reqRow = getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(info.lastInsertRowid);
+  svc.audit(creator, "disbursement_request", `req#${reqRow.id} ${amount} USDT -> ${to_address} (via API ${req.apiKey.name})`, ip(req));
+  const limit = Number(config.get().staff_auto_approve_limit || 0);
+  if (limit > 0 && Number(amount) <= limit) {
+    try {
+      const updated = await svc.executeDisbursement(reqRow, creator, limit);
+      svc.audit(creator, "disbursement_auto_approved", `req#${updated.id} (API)`, ip(req));
+      return res.json(disbOut(updated));
+    } catch (e) {
+      return res.json(disbOut(getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqRow.id)));
+    }
+  }
+  res.json(disbOut(reqRow));
+}));
+
+// ---------------- CSV export (admin) ----------------
+function csvEscape(v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+app.get("/transactions.csv", currentUser, adminRequired, (_req, res) => {
+  const rows = getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 10000").all();
+  const head = ["id", "created_at", "kind", "token", "from_address", "to_address", "amount", "usd_rate", "status", "tx_hash", "initiated_by"];
+  const lines = [head.join(",")].concat(rows.map((m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.status, m.tx_hash, userName(m.initiated_by)].map(csvEscape).join(",")));
+  res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=transactions.csv").send(lines.join("\n"));
+});
+app.get("/audit.csv", currentUser, adminRequired, (_req, res) => {
+  const rows = getDb().prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT 10000").all();
+  const head = ["id", "created_at", "user_id", "action", "detail", "ip"];
+  const lines = [head.join(",")].concat(rows.map((r) => [r.id, r.created_at, r.user_id, r.action, r.detail, r.ip].map(csvEscape).join(",")));
+  res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=audit.csv").send(lines.join("\n"));
 });
 
 // ---------------- address book (staff/admin) ----------------
@@ -584,6 +747,45 @@ app.get("/transactions", currentUser, staffOrAdmin, (req, res) => {
   res.json(rows.map(txOut));
 });
 
+// Analytics / reports summary (admin)
+app.get("/reports/summary", currentUser, adminRequired, (req, res) => {
+  const db = getDb();
+  const days = Math.min(90, Math.max(7, parseInt(req.query.days, 10) || 14));
+  const tot = (kind) => db.prepare("SELECT COUNT(*) c, COALESCE(SUM(CAST(amount AS REAL)),0) v FROM movements WHERE kind=? AND token='USDT'").get(kind);
+  const deposits = tot("deposit_in"), payouts = tot("disburse_out");
+
+  const map = {};
+  for (let i = days - 1; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10); map[d] = { date: d, deposits: 0, payouts: 0 }; }
+  const since = Object.keys(map)[0];
+  db.prepare(`SELECT substr(created_at,1,10) d, kind, COALESCE(SUM(CAST(amount AS REAL)),0) v
+              FROM movements WHERE token='USDT' AND kind IN ('deposit_in','disburse_out') AND substr(created_at,1,10) >= ?
+              GROUP BY d, kind`).all(since).forEach((r) => {
+    if (map[r.d]) { if (r.kind === "deposit_in") map[r.d].deposits = r.v; else map[r.d].payouts = r.v; }
+  });
+
+  const topCustomers = db.prepare(`SELECT u.username, COUNT(*) c, COALESCE(SUM(CAST(dr.amount AS REAL)),0) v
+    FROM disbursement_requests dr JOIN users u ON u.id=dr.customer_id
+    WHERE dr.customer_id IS NOT NULL AND dr.tx_hash IS NOT NULL
+    GROUP BY dr.customer_id ORDER BY v DESC LIMIT 10`).all();
+  const byStaff = db.prepare(`SELECT u.username, COUNT(*) c, COALESCE(SUM(CAST(m.amount AS REAL)),0) v
+    FROM movements m JOIN users u ON u.id=m.initiated_by
+    WHERE m.kind='disburse_out' GROUP BY m.initiated_by ORDER BY v DESC LIMIT 10`).all();
+
+  res.json({
+    days,
+    deposits: { count: deposits.c, volume: deposits.v },
+    payouts: { count: payouts.c, volume: payouts.v },
+    counts: {
+      customers: db.prepare("SELECT COUNT(*) c FROM users WHERE role='customer'").get().c,
+      staff: db.prepare("SELECT COUNT(*) c FROM users WHERE role='staff'").get().c,
+      pending_approvals: db.prepare("SELECT COUNT(*) c FROM disbursement_requests WHERE status='pending' AND tx_hash IS NULL").get().c,
+    },
+    series: Object.values(map),
+    top_customers: topCustomers,
+    by_staff: byStaff,
+  });
+});
+
 app.get("/receipts/:id", currentUser, (req, res) => {
   const key = req.params.id;
   const m = /^\d+$/.test(key)
@@ -653,9 +855,17 @@ let workerTimer = null;
 function startWorker() {
   if (workerTimer || !config.isSetupComplete()) return;
   const intervalMs = (Number(config.get().poll_interval_seconds) || 30) * 1000;
+  let lastDistribute = 0;
   const tick = async () => {
     try { const r = await svc.scanAndSweep(); if (r && r.length) console.log("[worker]", JSON.stringify(r)); }
     catch (e) { console.log("[worker] error:", e.message); }
+    try {
+      if (config.get().auto_distribute_enabled && Date.now() - lastDistribute > 10 * 60 * 1000) {
+        lastDistribute = Date.now();
+        const d = await svc.distributeTreasury(Number(config.get().treasury_hold_percent != null ? config.get().treasury_hold_percent : 10));
+        if (d && d.distributed) console.log("[worker] auto-distributed", d.distributed);
+      }
+    } catch (e) { console.log("[worker] auto-distribute error:", e.message); }
   };
   workerTimer = setInterval(tick, intervalMs);
   console.log(`[worker] started; every ${intervalMs / 1000}s on ${config.get().tron_network}`);

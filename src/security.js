@@ -47,6 +47,15 @@ function verifyToken(tok) {
   return jwt.verify(tok, get().app_secret);
 }
 
+// ---- API keys ----
+function generateApiKey() {
+  return "ck_" + crypto.randomBytes(24).toString("base64url");
+}
+function hashApiKey(key) {
+  return crypto.createHash("sha256").update(key).digest("hex");
+}
+
 module.exports = {
   hashPassword, verifyPassword, encryptSecret, decryptSecret, signToken, verifyToken,
+  generateApiKey, hashApiKey,
 };

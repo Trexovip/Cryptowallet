@@ -18,6 +18,7 @@ module.exports = {
   async usdtBalance(addr) { return usdt[addr] || 0; },
   async nativeBalance(addr) { return trx[addr] || 0; },
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
+  addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async sendUsdt(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);
     if ((usdt[from] || 0) + 1e-9 < amount) throw new Error("insufficient USDT (demo)");

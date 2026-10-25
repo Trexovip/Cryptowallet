@@ -99,8 +99,8 @@ function doLogout(){
 const NAV = {
   admin: [
     ["dashboard","Dashboard","◧"], ["wallets","Wallets","▦"], ["payouts","Payouts","↗"],
-    ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"],
-    ["staff","Staff","☷"], ["settings","Settings","⚙"], ["audit","Audit log","❏"]
+    ["reports","Reports","▚"], ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"],
+    ["staff","Staff","☷"], ["settings","Settings","⚙"], ["apikeys","API keys","⚿"], ["audit","Audit log","❏"]
   ],
   staff: [
     ["dashboard","Dashboard","◧"], ["wallets","Receive","▦"], ["payouts","Payouts","↗"],
@@ -130,7 +130,8 @@ function route(sec){
     ? { dashboard:renderCustomerDashboard, wallets:renderCustomerAssets, payouts:renderCustomerHistory }
     : { dashboard:renderDashboard, wallets:renderWallets, payouts:renderPayouts,
         staff:renderStaff, audit:renderAudit, customers:renderCustomers,
-        addressbook:renderAddressBook, settings:renderSettings, transactions:renderTransactions };
+        addressbook:renderAddressBook, settings:renderSettings, transactions:renderTransactions,
+        apikeys:renderApiKeys, reports:renderReports };
   const fn = map[sec];
   if (fn) fn();
 }
@@ -242,6 +243,7 @@ async function renderWallets(){
       <div class="panel-body">${treasury
         ? `<div class="recv-addr">${esc(treasury.address)}</div>
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${treasury.id}">Check balance</button>
+           <button class="btn btn-ghost btn-sm" data-secret="${treasury.id}">Key</button>
            <span class="hint" id="bal-${treasury.id}"></span></div>`
         : `<span class="hint">Deposits are swept here automatically. Keep the bulk of funds in cold storage.</span>`}
       </div></div>
@@ -270,6 +272,7 @@ async function renderWallets(){
         ? `<div class="recv-addr">${esc(fee.address)}</div>
            <div class="hint">Fund this address with TRX so the system can pay sweep fees.</div>
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${fee.id}">Check balance</button>
+           <button class="btn btn-ghost btn-sm" data-secret="${fee.id}">Key</button>
            <span class="hint" id="bal-${fee.id}"></span></div>`
         : `<span class="hint">Needed to pay the network fee when sweeping TRC-20 deposits.</span>`}
       </div></div>
@@ -282,7 +285,7 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Label</th><th>Address</th><th class="amt">USDT</th><th></th></tr></thead><tbody>
            ${pool.map(w => `<tr><td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
              <td class="amt num" id="pbal-${w.id}">—</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}">Check</button></td></tr>`).join("")}
+             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button></td></tr>`).join("")}
            </tbody></table>`
         : emptyState("No pool wallets yet. Payouts draw from these, topped up from treasury.")}
       </div></div>
@@ -301,11 +304,26 @@ async function renderWallets(){
         <button class="btn btn-primary" id="mkDeposit" ${staff.length?"":"disabled"}>Create deposit address</button>
       </div>
       <div class="panel-body flush">${deposits.length
-        ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th></tr></thead><tbody>
+        ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th><th></th></tr></thead><tbody>
            ${deposits.map(w => `<tr><td>${esc(uname(w.owner_user_id))}</td>
-             <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td></tr>`).join("")}</tbody></table>`
+             <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
+             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button></td></tr>`).join("")}</tbody></table>`
         : emptyState("No deposit addresses yet.")}
-      </div></div>`;
+      </div></div>
+
+    <div class="panel"><div class="panel-head"><h2>Import a wallet <span class="role-pill">admin</span></h2></div><div class="panel-body">
+      <div class="form-grid">
+        <div class="field"><label>Private key</label><input id="impKey" class="input mono" placeholder="existing TRON private key"></div>
+        <div class="field"><label>Use as</label><select id="impType" class="input">
+          <option value="disbursement">Pool wallet</option>
+          <option value="fee">Gas wallet</option>
+          <option value="treasury">Treasury (only if none)</option>
+          <option value="deposit">Deposit wallet</option></select></div>
+      </div>
+      <div class="field"><label>Label (optional)</label><input id="impLabel" class="input" placeholder="e.g. cold-storage import"></div>
+      <button class="btn btn-primary" id="impBtn">Import wallet</button>
+      <div class="hint" style="margin-top:6px">The key is encrypted at rest, same as generated wallets. Admin only.</div>
+    </div></div>`;
 
     wireWalletActions();
   }catch(e){ $("#wBody").innerHTML = emptyState(e.message); }
@@ -342,6 +360,11 @@ function wireWalletActions(){
     if (!sid) return toast("Pick a staff member", true);
     act(() => api("/wallets/deposit", {method:"POST",
       body:{ staff_user_id: sid, label: $("#depLabel").value.trim() }}), "Deposit address created", renderWallets);
+  });
+  on("impBtn", () => {
+    const private_key = $("#impKey").value.trim();
+    if (!private_key) return toast("Enter a private key", true);
+    act(() => api("/wallets/import", {method:"POST", body:{ private_key, wtype: $("#impType").value, label: $("#impLabel").value.trim() }}), "Wallet imported", renderWallets);
   });
   document.querySelectorAll(".bal").forEach(b => b.onclick = async () => {
     const id = b.dataset.id, cell = b.dataset.cell;
@@ -430,7 +453,7 @@ function payoutTable(reqs){
       <td>#${r.id}</td>
       <td>${addrHtml(r.to_address)}</td>
       <td class="amt num">${fmtUsdt(r.amount)} USDT</td>
-      <td>${statusBadge(r.status)}</td>
+      <td>${r.awaiting_second_approval ? `<span class="badge b-pending"><span class="dot"></span>awaiting 2nd approval</span>` : statusBadge(r.status)}</td>
       <td>${r.from_wallet_id ? "pool #" + r.from_wallet_id : "—"}</td>
       <td>${r.tx_hash ? `<span class="mono" title="${esc(r.tx_hash)}">${esc(r.tx_hash.slice(0,10))}…</span>` : "—"}</td>
       ${admin ? `<td class="row-actions">${pending
@@ -541,8 +564,9 @@ async function renderStaff(){
 /* ======================================================= AUDIT (admin) */
 async function renderAudit(){
   const sec = $("#sec-audit");
-  sec.innerHTML = `<div class="page-head"><div><h1>Audit log</h1>
-    <p>Every sensitive action, in order.</p></div></div><div id="aBody">Loading…</div>`;
+  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px"><div><h1>Audit log</h1>
+    <p>Every sensitive action, in order.</p></div><button id="auExport" class="btn btn-ghost btn-sm">Export CSV</button></div><div id="aBody">Loading…</div>`;
+  { const ex = $("#auExport"); if (ex) ex.onclick = () => downloadCsv("/audit.csv", "audit.csv"); }
   try{
     const rows = await api("/audit");
     $("#aBody").innerHTML = `<div class="panel"><div class="panel-body flush">${rows.length
@@ -617,6 +641,8 @@ async function openReceipt(key){
 }
 
 document.addEventListener("click", (e) => {
+  const sk = e.target.closest("[data-secret]");
+  if (sk){ showSecret(sk.dataset.secret); return; }
   const ut = e.target.closest("[data-usertx]");
   if (ut){ openUserTx(ut.dataset.usertx); return; }
   const q = e.target.closest("[data-qr]");
@@ -788,13 +814,135 @@ function transfersPanel(rows, title){
     ${body ? `<table><thead><tr><th>Date (UTC)</th><th>To</th><th class="amt">Amount</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No transfers yet.")}</div></div>`;
 }
 
+/* ---------- CSV export helper ---------- */
+async function downloadCsv(path, filename){
+  try{
+    const res = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
+    if (!res.ok) throw new Error("export failed (" + res.status + ")");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("Export downloaded");
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ---------- inline SVG bar chart (deposits vs payouts) ---------- */
+function barChartSVG(series){
+  const w = 720, h = 210, pad = 30;
+  const n = Math.max(1, series.length);
+  const slot = (w - pad * 2) / n;
+  const bw = Math.max(3, Math.min(14, slot / 2.6));
+  const max = Math.max(1, ...series.map(d => Math.max(d.deposits, d.payouts)));
+  const x = (i) => pad + (i + 0.5) * slot;
+  const y = (v) => h - pad - (v / max) * (h - pad * 2);
+  let bars = "", labels = "";
+  const step = Math.ceil(n / 7);
+  series.forEach((d, i) => {
+    const cx = x(i);
+    bars += `<rect x="${(cx - bw - 1).toFixed(1)}" y="${y(d.deposits).toFixed(1)}" width="${bw.toFixed(1)}" height="${(h - pad - y(d.deposits)).toFixed(1)}" rx="2" fill="var(--accent)"></rect>`;
+    bars += `<rect x="${(cx + 1).toFixed(1)}" y="${y(d.payouts).toFixed(1)}" width="${bw.toFixed(1)}" height="${(h - pad - y(d.payouts)).toFixed(1)}" rx="2" fill="var(--warn)"></rect>`;
+    if (i % step === 0) labels += `<text x="${cx.toFixed(1)}" y="${h - 8}" font-size="10" text-anchor="middle" fill="var(--faint)">${esc(d.date.slice(5))}</text>`;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" style="display:block;overflow:visible">
+    <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="var(--line)"></line>${bars}${labels}</svg>`;
+}
+
+/* ---------- reveal / export private key (admin) ---------- */
+async function showSecret(id){
+  try{
+    const s = await api("/wallets/" + id + "/secret");
+    confirmModal({ title:"Private key", okLabel:"Done", okClass:"btn-accent",
+      bodyHtml:`<div class="live-note">Anyone with this key controls this wallet's funds. Never share it; close this when you're done.</div>
+        <div class="field" style="margin-top:12px"><label>Address</label><div class="recv-addr">${esc(s.address)}</div></div>
+        <div class="field"><label>Private key (import into any TRON wallet)</label>
+          <div class="recv-addr" style="user-select:all">${esc(s.private_key)}</div>
+          <div class="form-actions" style="margin-top:8px"><button class="btn btn-ghost btn-sm" data-copy="${esc(s.private_key)}">Copy key</button></div></div>` });
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ---------- reports (admin) ---------- */
+async function renderReports(){
+  const sec = $("#sec-reports");
+  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+    <div><h1>Reports</h1><p>Volumes, trends, and breakdowns.</p></div>
+    <button id="repExport" class="btn btn-ghost btn-sm">Export transactions CSV</button></div><div id="repBody">Loading…</div>`;
+  { const ex = $("#repExport"); if (ex) ex.onclick = () => downloadCsv("/transactions.csv", "transactions.csv"); }
+  try{
+    const r = await api("/reports/summary?days=14");
+    sec.querySelector("#repBody").innerHTML = `
+      <div class="readouts">
+        <div class="readout"><div class="label">Deposits (total)</div><div class="value lead num">${fmtUsdt(r.deposits.volume)}<span class="unit">USDT</span></div><div class="foot">${r.deposits.count} deposits</div></div>
+        <div class="readout"><div class="label">Payouts (total)</div><div class="value num">${fmtUsdt(r.payouts.volume)}<span class="unit">USDT</span></div><div class="foot">${r.payouts.count} payouts</div></div>
+        <div class="readout"><div class="label">Pending approvals</div><div class="value num">${r.counts.pending_approvals}</div><div class="foot">${r.counts.customers} customers · ${r.counts.staff} staff</div></div>
+      </div>
+      <div class="panel"><div class="panel-head"><h2>Deposits vs payouts — last ${r.days} days</h2>
+        <div style="font-size:12px;color:var(--muted)"><span style="color:var(--accent-ink)">■</span> deposits &nbsp; <span style="color:var(--warn)">■</span> payouts</div></div>
+        <div class="panel-body">${barChartSVG(r.series)}</div></div>
+      <div class="panel"><div class="panel-head"><h2>Top customers by received</h2></div><div class="panel-body flush">
+        ${r.top_customers.length ? `<table><thead><tr><th>Customer</th><th class="amt">Received (USDT)</th><th class="amt">Transfers</th></tr></thead><tbody>${r.top_customers.map(c => `<tr><td>${esc(c.username)}</td><td class="amt num">${fmtUsdt(c.v)}</td><td class="amt num">${c.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No customer payouts yet.")}</div></div>
+      <div class="panel"><div class="panel-head"><h2>Payout volume by user</h2></div><div class="panel-body flush">
+        ${r.by_staff.length ? `<table><thead><tr><th>User</th><th class="amt">Paid out (USDT)</th><th class="amt">Payouts</th></tr></thead><tbody>${r.by_staff.map(s => `<tr><td>${esc(s.username)}</td><td class="amt num">${fmtUsdt(s.v)}</td><td class="amt num">${s.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No payouts yet.")}</div></div>`;
+  }catch(e){ sec.querySelector("#repBody").innerHTML = emptyState(e.message); }
+}
+
+/* ---------- API keys (admin) ---------- */
+async function renderApiKeys(){
+  const sec = $("#sec-apikeys");
+  sec.innerHTML = `<div class="page-head"><h1>API keys</h1><p>Programmatic access for your own systems. A key is shown once — store it securely.</p></div><div id="akBody">Loading…</div>`;
+  try{
+    const list = await api("/apikeys");
+    const rows = list.map(k => `<tr>
+      <td>${esc(k.name||"—")}</td><td class="mono">${esc(k.prefix)}…</td>
+      <td>${k.scopes.map(s => `<span class="role-pill">${esc(s)}</span>`).join(" ")}</td>
+      <td>${k.last_used ? esc(k.last_used.replace("T"," ").slice(0,16)) : "—"}</td>
+      <td>${k.is_active ? `<span class="badge b-confirmed"><span class="dot"></span>active</span>` : `<span class="badge b-failed"><span class="dot"></span>revoked</span>`}</td>
+      <td class="row-actions">${k.is_active ? `<button class="btn btn-ghost btn-sm ak-revoke" data-id="${k.id}">Revoke</button>` : "—"}</td></tr>`).join("");
+    $("#akBody").innerHTML = `
+      <div class="panel"><div class="panel-head"><h2>Create key</h2></div><div class="panel-body">
+        <div class="field"><label>Name / label</label><input id="akName" class="input" placeholder="e.g. DMT backend"></div>
+        <div class="field"><label>Scopes</label><div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:4px">
+          <label style="display:inline-flex;align-items:center;gap:7px;font-weight:400"><input type="checkbox" class="ak-scope" value="read" checked> read</label>
+          <label style="display:inline-flex;align-items:center;gap:7px;font-weight:400"><input type="checkbox" class="ak-scope" value="deposits"> deposits</label>
+          <label style="display:inline-flex;align-items:center;gap:7px;font-weight:400"><input type="checkbox" class="ak-scope" value="payouts"> payouts</label>
+        </div></div>
+        <button class="btn btn-primary" id="akCreate">Create key</button></div></div>
+      <div class="panel"><div class="panel-head"><h2>Keys <span class="cnt">${list.length}</span></h2></div>
+        <div class="panel-body flush">${rows ? `<div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>Status</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : emptyState("No API keys yet.")}</div></div>
+      <div class="panel"><div class="panel-head"><h2>Using the API</h2></div><div class="panel-body">
+        <div class="recv-addr">curl -H "X-API-Key: YOUR_KEY" ${esc(location.origin)}/api/v1/ping</div>
+        <div class="hint" style="margin-top:8px">Endpoints: <span class="mono">GET /api/v1/ping</span> · <span class="mono">GET /api/v1/wallets/:address/balance</span> · <span class="mono">POST /api/v1/deposit-wallets</span> · <span class="mono">POST /api/v1/payouts</span> (accepts <span class="mono">idempotency_key</span>) · <span class="mono">GET /api/v1/transactions</span>.</div>
+      </div></div>`;
+    $("#akCreate").onclick = () => {
+      const name = $("#akName").value.trim();
+      const scopes = Array.from(document.querySelectorAll(".ak-scope:checked")).map(c => c.value);
+      if (!scopes.length) return toast("Select at least one scope", true);
+      api("/apikeys", {method:"POST", body:{ name, scopes }})
+        .then(r => { showApiKeyOnce(r.key, r.scopes); renderApiKeys(); })
+        .catch(e => toast(e.message, true));
+    };
+    document.querySelectorAll(".ak-revoke").forEach(b => b.onclick = () =>
+      act(() => api("/apikeys/" + b.dataset.id + "/revoke", {method:"POST"}), "Key revoked", renderApiKeys));
+  }catch(e){ $("#akBody").innerHTML = emptyState(e.message); }
+}
+function showApiKeyOnce(key, scopes){
+  confirmModal({ title:"Your new API key", okLabel:"Done", okClass:"btn-accent",
+    bodyHtml:`<p style="margin:0 0 10px;font-size:13.5px;color:var(--muted)">Copy this now — it won't be shown again. Scopes: ${(scopes||[]).map(esc).join(", ")}</p>
+      <div class="recv-addr" style="user-select:all">${esc(key)}</div>
+      <div class="form-actions" style="margin-top:10px"><button class="btn btn-ghost btn-sm" data-copy="${esc(key)}">Copy key</button></div>` });
+}
+
 /* ---------- transactions (admin: all + filter by user; staff: own) ---------- */
 let txFilterUser = null;
 function openUserTx(id){ txFilterUser = String(id); route("transactions"); }
 async function renderTransactions(){
   const sec = $("#sec-transactions");
   const isAdmin = state.user.role === "admin";
-  sec.innerHTML = `<div class="page-head"><h1>Transactions</h1><p>Full history of value movements${isAdmin ? " — filter by any user." : " you initiated."}</p></div><div id="txBody">Loading…</div>`;
+  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+    <div><h1>Transactions</h1><p>Full history of value movements${isAdmin ? " — filter by any user." : " you initiated."}</p></div>
+    ${isAdmin ? `<button id="txExport" class="btn btn-ghost btn-sm">Export CSV</button>` : ""}</div><div id="txBody">Loading…</div>`;
+  if (isAdmin) { const ex = $("#txExport"); if (ex) ex.onclick = () => downloadCsv("/transactions.csv", "transactions.csv"); }
   try{
     let users = [], customers = [];
     if (isAdmin){
@@ -889,6 +1037,19 @@ async function renderSettings(){
       </div>
     </div></div>
 
+    <div class="panel"><div class="panel-head"><h2>Controls &amp; integrations</h2></div><div class="panel-body">
+      <div class="form-grid">
+        <div class="field"><label>Dual-control threshold (USDT)</label>
+          <input id="cfgDual" class="input" type="number" step="0.01" min="0" value="${esc(c.dual_control_threshold)}">
+          <div class="hint">Payouts at or above this need a second admin's approval. 0 = off.</div></div>
+        <div class="field"><label>Webhook URL</label>
+          <input id="cfgHook" class="input mono" value="${esc(c.webhook_url || "")}" placeholder="https://your-system/webhook">
+          <div class="hint">POST on deposit.received and payout.sent.</div></div>
+      </div>
+      <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAllow" ${c.payout_allowlist_only ? "checked" : ""}> Allow-list mode — pool payouts only to address-book / whitelisted addresses</label></div>
+      <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAuto" ${c.auto_distribute_enabled ? "checked" : ""}> Auto-distribute treasury surplus to the pool periodically</label></div>
+    </div></div>
+
     <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
@@ -905,6 +1066,10 @@ async function renderSettings(){
         gas_fund_trx: parseFloat($("#cfgGas").value) || 0,
         disbursement_float_usdt: parseFloat($("#cfgFloat").value) || 0,
         poll_interval_seconds: parseInt($("#cfgPoll").value, 10) || 30,
+        dual_control_threshold: parseFloat($("#cfgDual").value) || 0,
+        webhook_url: $("#cfgHook").value.trim(),
+        payout_allowlist_only: $("#cfgAllow").checked,
+        auto_distribute_enabled: $("#cfgAuto").checked,
       };
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
       act(() => api("/admin/config", {method:"POST", body}), "Settings saved", renderSettings);

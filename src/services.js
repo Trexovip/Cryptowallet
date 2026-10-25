@@ -22,6 +22,24 @@ function record(kind, from, to, amount, tx, { walletId = null, userId = null, st
         usdRate == null ? null : String(usdRate), now()).lastInsertRowid;
 }
 
+function fireWebhook(event, data) {
+  const url = get().webhook_url;
+  if (!url) return;
+  try { fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ event, data, at: new Date().toISOString() }) }).catch(() => {}); }
+  catch (e) { /* ignore */ }
+}
+
+async function importWallet(privHex, wtype, ownerUserId = null, label = "") {
+  const clean = String(privHex).replace(/^0x/, "").trim();
+  const address = chain.addressFromPrivateKey(clean);
+  if (!address) throw new Error("invalid private key");
+  if (getDb().prepare("SELECT 1 FROM wallets WHERE address=?").get(address)) throw new Error("that wallet already exists");
+  const info = getDb().prepare(
+    `INSERT INTO wallets(chain,address,enc_privkey,wtype,label,owner_user_id,is_active,created_at) VALUES('tron',?,?,?,?,?,1,?)`
+  ).run(address, sec.encryptSecret(clean), wtype, label, ownerUserId, now());
+  return getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+}
+
 async function createWallet(wtype, ownerUserId = null, label = "") {
   const w = await chain.newWallet();
   const info = getDb().prepare(
@@ -56,6 +74,7 @@ async function scanAndSweep() {
       for (const t of incoming) {
         if (t.txid && known.has(t.txid)) continue;
         record("deposit_in", t.from, w.address, t.amount, t.txid, { walletId: w.id, status: "confirmed", note: "deposit received", usdRate: rate });
+        fireWebhook("deposit.received", { address: w.address, from: t.from, amount: t.amount, tx: t.txid });
       }
     } catch {
       record("deposit_in", null, w.address, bal, null, { walletId: w.id, status: "confirmed", note: "detected on scan", usdRate: rate });
@@ -111,6 +130,7 @@ async function executeDisbursement(req, approverId, cap = null) {
   const tx = await chain.sendUsdt(pk, req.to_address, amount);
   record("disburse_out", wallet.address, req.to_address, amount, tx,
     { walletId: wallet.id, userId: req.staff_user_id, note: `payout req#${req.id}`, usdRate: rate });
+  fireWebhook("payout.sent", { to: req.to_address, amount, tx, request_id: req.id });
 
   db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
     .run(approverId, wallet.id, tx, now(), req.id);
@@ -164,5 +184,5 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
 
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
-  distributeTreasury, treasurySend, adminSendFrom,
+  distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook,
 };

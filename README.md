@@ -144,6 +144,39 @@ The **Settings** screen (admin) now exposes the full operational config, editabl
 (disabled users are blocked from signing in; you can't disable yourself or the last admin),
 and **reset a user's password**.
 
+## Advanced features
+
+- **Private key export / import** — admins can reveal any wallet's private key (admin-only,
+  audit-logged, with a warning) to back up or import into an external TRON wallet, and import
+  an existing key as a treasury/pool/gas/deposit wallet. Keys stay AES-256-GCM encrypted at rest.
+- **Reports & charts** — a Reports screen with deposit/payout volumes, a deposits-vs-payouts
+  trend chart, top customers, and payout volume by user, plus CSV export.
+- **Dual-control approvals** — set a USDT threshold; payouts at/above it require a *second,
+  distinct* admin to approve before they execute.
+- **Webhooks** — set a URL and the system POSTs `deposit.received` and `payout.sent` events to it.
+- **Allow-list mode** — when on, pool payouts are only allowed to address-book / whitelisted
+  addresses (admin direct-send is exempt by design).
+- **Login rate-limiting** — repeated failed logins are locked out for a cooldown window.
+- **Scheduled auto-distribute** — optionally have the worker periodically distribute treasury
+  surplus to the pool (respecting the hold-back %).
+
+## Programmatic API & exports
+
+**API keys** (admin → API keys): mint scoped keys (`read`, `deposits`, `payouts`). The key is
+shown once; only a hash is stored. External systems authenticate with an `X-API-Key` header:
+
+```
+curl -H "X-API-Key: ck_live_xxx" https://your-host/api/v1/ping
+```
+
+Endpoints: `GET /api/v1/ping`, `GET /api/v1/wallets/:address/balance`,
+`POST /api/v1/deposit-wallets`, `POST /api/v1/payouts` (accepts an `idempotency_key` to make
+retries safe), `GET /api/v1/transactions`. API payouts follow the same auto-approve/approval
+rules; anything above the limit waits for an admin. Keys can be revoked instantly.
+
+**CSV export** (admin): download the full transaction ledger and audit log as CSV from the
+Transactions and Audit screens (`/transactions.csv`, `/audit.csv`) for accounting/compliance.
+
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).
 - `data/custody.db` — the SQLite database.
