@@ -563,7 +563,9 @@ app.post("/disbursements", currentUser, staffOrAdmin, wrap(async (req, res) => {
         `req#${updated.id}${isAdmin ? " (admin)" : " <= limit " + staffLimit}`, ip(req));
       return res.json(disbOut(updated));
     } catch (e) {
-      return res.json(disbOut(getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(info.lastInsertRowid)));
+      // Surface the real reason (e.g. "treasury has no TRX for fees", "insufficient liquidity")
+      // instead of silently showing the request as pending. It stays pending so it can be retried.
+      return res.status(400).json({ detail: `payout could not be sent — ${e.message}. It's saved as pending; fix the issue and approve to retry.`, request_id: info.lastInsertRowid });
     }
   }
   res.json(disbOut(reqRow));
@@ -955,7 +957,7 @@ app.post("/api/v1/payouts", apiAuth, requireScope("payouts"), wrap(async (req, r
       svc.audit(creator, "disbursement_auto_approved", `req#${updated.id} (API)`, ip(req));
       return res.json(disbOut(updated));
     } catch (e) {
-      return res.json(disbOut(getDb().prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqRow.id)));
+      return res.status(400).json({ detail: `payout could not be sent — ${e.message}`, request_id: reqRow.id });
     }
   }
   res.json(disbOut(reqRow));
