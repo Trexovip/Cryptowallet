@@ -393,7 +393,11 @@ function wireWalletActions(){
         <div class="kv"><span class="k">Amount</span><span class="v num">${fmtUsdt(amt)} USDT</span></div>
         <div class="kv"><span class="k">To</span><span class="v mono" style="font-size:12px">${esc(shortAddr(to))}</span></div>
         ${live?`<div class="live-note">This sends real USDT on mainnet. It cannot be reversed.</div>`:""}` });
-    if (ok) act(() => api("/admin/send", {method:"POST", body:{ from, to_address: to, amount: amt }}), "Sent", renderWallets);
+    if (!ok) return;
+    await withBusy($("#trSend"), "Sending…", async () => {
+      try { await api("/admin/send", {method:"POST", body:{ from, to_address: to, amount: amt }}); toast("Sent — confirming…"); renderWallets(); }
+      catch (e) { toast(e.message, true); }
+    });
   });
   on("mkFee", () => act(() => api("/wallets/fee", {method:"POST"}), "Gas wallet created", renderWallets));
   on("mkPool", () => {
@@ -469,7 +473,7 @@ async function renderPayouts(){
     $("#pBody").innerHTML = liqCard + (canPay ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
     if (canPay) $("#pSubmit").onclick = submitRequest;
     if (state.user.role === "admin")
-      document.querySelectorAll(".approve").forEach(b => b.onclick = () => approve(b.dataset));
+      document.querySelectorAll(".approve").forEach(b => b.onclick = () => approve(b.dataset, b));
   }catch(e){ $("#pBody").innerHTML = emptyState(e.message); }
 }
 function staffRequestForm(settings, book){
@@ -521,16 +525,19 @@ function payoutTable(reqs){
     </div></div>`;
 }
 async function submitRequest(){
+  const btn = $("#pSubmit");
   const to = $("#pTo").value.trim(), amt = parseFloat($("#pAmt").value);
   if (!to){ return toast("Enter a recipient address", true); }
   if (!(amt > 0)){ return toast("Enter a valid amount", true); }
-  try{
-    const r = await api("/disbursements", {method:"POST", body:{ to_address: to, amount: amt, reason: $("#pReason").value.trim() }});
-    toast(r.tx_hash ? "Payout sent" : "Payout request submitted for approval");
-    renderPayouts();
-  }catch(e){ toast(e.message, true); }
+  await withBusy(btn, "Sending…", async () => {
+    try{
+      const r = await api("/disbursements", {method:"POST", body:{ to_address: to, amount: amt, reason: $("#pReason").value.trim() }});
+      toast(r.tx_hash ? "Payout sent — confirming…" : "Payout request submitted for approval");
+      renderPayouts(); refreshSoon("sec-payouts", renderPayouts);
+    }catch(e){ toast(e.message, true); }
+  });
 }
-async function approve({ id, to, amt }){
+async function approve({ id, to, amt }, btn){
   const live = state.network === "mainnet";
   const ok = await confirmModal({
     title: "Approve and send payout",
@@ -538,11 +545,14 @@ async function approve({ id, to, amt }){
     bodyHtml: `
       <div class="kv"><span class="k">Amount</span><span class="v num">${fmtUsdt(amt)} USDT</span></div>
       <div class="kv"><span class="k">Recipient</span><span class="v mono" style="font-size:12px">${esc(shortAddr(to))}</span></div>
-      <div class="kv"><span class="k">Source</span><span class="v">random pool wallet</span></div>
+      <div class="kv"><span class="k">Source</span><span class="v">rotating pool wallet</span></div>
       ${live ? `<div class="live-note">This sends real USDT on mainnet. It cannot be reversed.</div>` : ""}`
   });
   if (!ok) return;
-  act(() => api(`/disbursements/${id}/approve`, {method:"POST"}), "Payout sent", renderPayouts);
+  await withBusy(btn, "Sending…", async () => {
+    try { await api(`/disbursements/${id}/approve`, {method:"POST"}); toast("Payout sent — confirming…"); renderPayouts(); refreshSoon("sec-payouts", renderPayouts); }
+    catch (e) { toast(e.message, true); }
+  });
 }
 
 /* ======================================================= STAFF (admin) */
@@ -636,6 +646,17 @@ async function act(fn, okMsg, after){
   try{ await fn(); toast(okMsg); if (after) after(); }
   catch(e){ toast(e.message, true); }
 }
+// Disable a button and show a busy label while an async action runs — prevents double-clicks
+// and makes it clear something is happening.
+async function withBusy(btn, label, run){
+  if (btn && btn.disabled) return;           // already in flight — ignore repeat clicks
+  const prev = btn ? btn.textContent : null;
+  if (btn){ btn.disabled = true; btn.textContent = label || "Working…"; }
+  try { return await run(); }
+  finally { if (btn && btn.isConnected){ btn.disabled = false; btn.textContent = prev; } }
+}
+// Re-render a section shortly after, so a just-broadcast "pending" row flips to confirmed/failed.
+function refreshSoon(secId, fn, ms = 5000){ setTimeout(() => { const s = $("#" + secId); if (s && s.classList.contains("active")) fn(); }, ms); }
 
 /* global copy-button delegation */
 /* ---------- receipts ---------- */
@@ -941,7 +962,7 @@ async function openCustomer(id){
         act(() => api("/customers/" + id + "/whitelist", { method:"POST", body:{ address, label: $("#wlLabel").value.trim() } }), "Address whitelisted", () => openCustomer(id)); };
       const send = $("#poSend");
       if (send) send.onclick = () => { const amt = parseFloat($("#poAmt").value); if (!(amt > 0)) return toast("Enter a valid amount", true);
-        act(() => api("/disbursements", { method:"POST", body:{ customer_id: id, amount: amt, to_address: $("#poAddr").value, reason: $("#poReason").value.trim() } }), "Payout created — pending admin approval", () => openCustomer(id)); };
+        withBusy(send, "Sending…", async () => { try { const r = await api("/disbursements", { method:"POST", body:{ customer_id: id, amount: amt, to_address: $("#poAddr").value, reason: $("#poReason").value.trim() } }); toast(r.tx_hash ? "Payout sent — confirming…" : "Payout created — pending admin approval"); openCustomer(id); } catch (e) { toast(e.message, true); } }); };
     }
     document.querySelectorAll(".as-del").forEach(b => b.onclick = () =>
       act(() => api("/customers/" + id + "/staff/" + b.dataset.sid, { method:"DELETE" }), "Staff unassigned", () => openCustomer(id)));

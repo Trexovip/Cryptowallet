@@ -173,6 +173,25 @@ async function undelegateEnergy(privHex, toAddress, amountTrx) {
   return _send(tw, await tw.transactionBuilder.undelegateResource(Math.round(Number(amountTrx) * 1e6), toAddress, "ENERGY", owner));
 }
 
+// Confirm a broadcast tx actually succeeded on-chain. Returns "confirmed" | "failed" | "pending".
+// Not routed through the throttle itself (it would hog a slot while polling); each poll IS throttled.
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function _getTxInfo(txid) { try { return await base().trx.getTransactionInfo(txid); } catch { return null; } }
+async function confirmTx(txid, { tries = 10, gapMs = 2000 } = {}) {
+  if (!txid) return "failed";
+  for (let i = 0; i < tries; i++) {
+    const info = await limit(() => _getTxInfo(txid));
+    if (info && info.id) {
+      if (info.result === "FAILED") return "failed";
+      const r = info.receipt && info.receipt.result;
+      if (r && r !== "SUCCESS" && r !== "DEFAULT") return "failed"; // REVERT / OUT_OF_ENERGY / OUT_OF_TIME ...
+      return "confirmed";
+    }
+    await _sleep(gapMs);
+  }
+  return "pending"; // broadcast but not yet confirmed within the window
+}
+
 // Sign an arbitrary message with the wallet's key (for Tronscan ownership proof).
 async function signMessage(privHex, message) {
   const tw = signer(String(privHex).replace(/^0x/, ""));
@@ -185,4 +204,4 @@ const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listInco
 const _throttled = {};
 for (const [k, f] of Object.entries(_networkFns)) _throttled[k] = (...args) => limit(() => f(...args));
 // newWallet / addressFromPrivateKey / signMessage are local (no network) — left unthrottled.
-module.exports = { newWallet, addressFromPrivateKey, signMessage, ..._throttled };
+module.exports = { newWallet, addressFromPrivateKey, signMessage, confirmTx, ..._throttled };

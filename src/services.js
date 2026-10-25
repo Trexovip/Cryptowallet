@@ -233,6 +233,26 @@ async function ensurePoolFunded(need, usdRate = null) {
   return target;
 }
 
+// Check the on-chain receipt after broadcast and update the ledger + payout row to
+// confirmed/failed (leaves it pending if it can't confirm within the window).
+function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
+  Promise.resolve()
+    .then(() => chain.confirmTx(tx))
+    .then((status) => {
+      if (status === "pending") return; // unknown yet — leave as pending
+      const db = getDb();
+      if (moveId) db.prepare("UPDATE movements SET status=? WHERE id=?").run(status, moveId);
+      if (reqId) {
+        db.prepare("UPDATE disbursement_requests SET status=? WHERE id=? AND tx_hash=?").run(status, reqId, tx);
+        if (status === "confirmed") {
+          const r = db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqId);
+          if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx, request_id: r.id });
+        }
+      }
+    })
+    .catch(() => { /* best-effort */ });
+}
+
 async function executeDisbursement(req, approverId, cap = null) {
   const db = getDb();
   const amount = Number(req.amount);
@@ -244,12 +264,13 @@ async function executeDisbursement(req, approverId, cap = null) {
   await ensureGas(wallet);
   const pk = sec.decryptSecret(wallet.enc_privkey);
   const tx = await chain.sendUsdt(pk, req.to_address, amount);
-  record("disburse_out", wallet.address, req.to_address, amount, tx,
-    { walletId: wallet.id, userId: req.staff_user_id, note: `payout req#${req.id}`, usdRate: rate });
-  fireWebhook("payout.sent", { to: req.to_address, amount, tx, request_id: req.id });
-
-  db.prepare("UPDATE disbursement_requests SET status='confirmed', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
+  // Return immediately after broadcast (status "pending") so the UI is fast; the on-chain
+  // receipt is checked in the background and the row flips to confirmed/failed when known.
+  const moveId = record("disburse_out", wallet.address, req.to_address, amount, tx,
+    { walletId: wallet.id, userId: req.staff_user_id, status: "pending", note: `payout req#${req.id}`, usdRate: rate });
+  db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
     .run(approverId, wallet.id, tx, now(), req.id);
+  confirmInBackground(tx, { moveId, reqId: req.id });
   return db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.id);
 }
 
@@ -295,9 +316,10 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
   const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
-  record(kind, sourceWallet.address, toAddress, Number(amount), tx,
-    { walletId: sourceWallet.id, note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
-  return { tx, kind };
+  const moveId = record(kind, sourceWallet.address, toAddress, Number(amount), tx,
+    { walletId: sourceWallet.id, status: "pending", note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
+  confirmInBackground(tx, { moveId });
+  return { tx, kind, status: "pending" };
 }
 
 async function setOnchainName(wallet, name) {
