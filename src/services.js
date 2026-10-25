@@ -68,17 +68,24 @@ async function createWallet(wtype, ownerUserId = null, label = "") {
      VALUES('tron',?,?,?,?,?,1,?)`
   ).run(w.address, sec.encryptSecret(w.privateKey), wtype, label, ownerUserId, now());
   const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
-  await preloadGas(wallet);
-  // best-effort: label customer deposit wallets on-chain (TRON account name, one-time)
+  // Gas pre-load and the one-time on-chain name are done in the BACKGROUND so wallet
+  // creation returns immediately and the UI refreshes without waiting on the network.
+  provisionNewWallet(wallet);
+  return wallet;
+}
+
+// Background side-effects for a freshly created wallet: fund gas, then set its one-time
+// on-chain name (deposit wallets only). Best-effort — never blocks or fails creation.
+async function provisionNewWallet(wallet) {
   try {
+    await preloadGas(wallet);
     const tpl = get().customer_onchain_name != null ? get().customer_onchain_name : "KryvonWallet-{id}";
-    if (tpl && wtype === "deposit") {
+    if (tpl && wallet.wtype === "deposit") {
       const owner = wallet.owner_user_id ? getDb().prepare("SELECT username FROM users WHERE id=?").get(wallet.owner_user_id) : null;
       const name = renderCustomerName(tpl, { id: wallet.owner_user_id || "", username: owner ? owner.username : "", app: get().app_name || "KryvonWallet" });
       if (name) await setOnchainName(wallet, name);
     }
   } catch (e) { /* non-fatal */ }
-  return wallet;
 }
 const getTreasury = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='treasury' AND is_active=1").get();
 const getFee = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='fee' AND is_active=1").get();
@@ -86,9 +93,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Ensure a wallet is activated and has TRX before it sends a TRC-20 transfer.
 // Tops it up from the gas (fee) wallet when low, then waits for on-chain confirmation.
+// Provision Energy for a wallet before a USDT transfer so it spends energy instead of burning TRX.
+async function ensureEnergy(wallet) {
+  const mode = get().energy_mode || "burn";
+  if (mode === "burn" || !wallet) return;
+  try {
+    if (mode === "stake") {
+      const fee = getFee(); if (!fee) return;
+      const trx = Number(get().energy_delegate_trx || 0);
+      if (trx > 0) { const feePk = sec.decryptSecret(fee.enc_privkey); await chain.delegateEnergy(feePk, wallet.address, trx, false); }
+    } else if (mode === "rental") {
+      const url = get().energy_rental_url; if (!url) return;
+      const headers = { "Content-Type": "application/json" };
+      if (get().energy_rental_api_key) headers.Authorization = "Bearer " + get().energy_rental_api_key;
+      await fetch(url, { method: "POST", headers, body: JSON.stringify({ address: wallet.address, energy: Number(get().energy_rental_amount || 65000) }) });
+    }
+  } catch (e) { /* best-effort: if energy provisioning fails the transfer still goes through by burning TRX */ }
+}
+
 async function ensureGas(wallet) {
   const fee = getFee();
   if (!fee || !wallet) return;
+  await ensureEnergy(wallet);
   let trx = 0;
   try { trx = await chain.nativeBalance(wallet.address); } catch { trx = 0; }
   if (trx >= Number(get().gas_fund_trx)) return;
@@ -285,6 +311,24 @@ function renderCustomerName(tpl, ctx) {
     .trim().slice(0, 32);
 }
 
+async function energyStatus() {
+  const fee = getFee();
+  if (!fee) return { configured: false };
+  let resources = {}; try { resources = await chain.accountResources(fee.address); } catch { resources = {}; }
+  let trx = 0; try { trx = await chain.nativeBalance(fee.address); } catch { trx = 0; }
+  return { configured: true, mode: get().energy_mode || "burn", address: fee.address, trx, ...resources };
+}
+async function stakeEnergy(trx) {
+  const fee = getFee(); if (!fee) throw new Error("no gas/energy wallet");
+  const pk = sec.decryptSecret(fee.enc_privkey);
+  return { tx: await chain.freezeEnergy(pk, trx) };
+}
+async function unstakeEnergy(trx) {
+  const fee = getFee(); if (!fee) throw new Error("no gas/energy wallet");
+  const pk = sec.decryptSecret(fee.enc_privkey);
+  return { tx: await chain.unfreezeEnergy(pk, trx) };
+}
+
 async function ownershipProof(wallet, project) {
   const message = `I confirm this address belongs to ${project}.`;
   const pk = sec.decryptSecret(wallet.enc_privkey);
@@ -295,4 +339,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy,
 };

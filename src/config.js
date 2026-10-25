@@ -30,6 +30,12 @@ const DEFAULTS = {
   favicon: "",                    // data URL / URL of the browser favicon
   qr_logo: "",                    // data URL / URL placed in the centre of QR codes
   customer_onchain_name: "KryvonWallet-{id}", // on-chain TRON name template per customer deposit wallet; {id} {username} {app} ("" = off)
+  // Gas/energy strategy. USDT transfers cost Energy; without it TRON burns TRX (expensive).
+  energy_mode: "burn",            // "burn" = let TRON burn TRX (default) | "stake" = delegate self-staked energy | "rental" = buy from a provider
+  energy_delegate_trx: 0,         // stake mode: TRX of frozen balance to delegate to a wallet before each send (tune to cover ~65k energy)
+  energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
+  energy_rental_api_key: "",      // rental mode: bearer token for the provider
+  energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)
 };
 
 let cfg = null;

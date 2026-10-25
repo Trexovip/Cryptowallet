@@ -1280,6 +1280,24 @@ async function renderSettings(){
       <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAuto" ${c.auto_distribute_enabled ? "checked" : ""}> Auto-distribute treasury surplus to the pool periodically</label></div>
     </div></div>
 
+    <div class="panel"><div class="panel-head"><h2>Gas &amp; energy</h2></div><div class="panel-body">
+      <div class="hint" style="margin-bottom:10px">USDT (TRC-20) transfers cost <b>Energy</b>. Without energy, TRON burns TRX per transfer (expensive). Use staked or rented energy to cut fees dramatically.</div>
+      <div class="field"><label>Fee strategy</label>
+        <select id="cfgEnergyMode" class="input">
+          <option value="burn"${(c.energy_mode||'burn')==='burn'?' selected':''}>Burn TRX (simple, highest cost)</option>
+          <option value="stake"${c.energy_mode==='stake'?' selected':''}>Self-staked energy (freeze TRX, delegate per send)</option>
+          <option value="rental"${c.energy_mode==='rental'?' selected':''}>Rent energy from a provider</option>
+        </select></div>
+      <div class="field"><label>Delegate per send — TRX of staked balance (stake mode)</label><input id="cfgEnergyDelegate" class="input" type="number" min="0" step="1" value="${Number(c.energy_delegate_trx||0)}"><div class="hint">Enough frozen TRX to cover ~65,000 energy for one USDT transfer; tune on testnet for your network's energy price.</div></div>
+      <div class="field"><label>Rental endpoint URL (rental mode)</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
+      <div class="field"><label>Rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
+      <div class="field"><label>Energy per transfer (rental)</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <div class="hint" id="enStatus">Loading energy status…</div>
+      <div class="form-actions" style="margin-top:10px"><input id="enStakeAmt" class="input" type="number" min="0" step="1" placeholder="TRX" style="max-width:140px"><button class="btn btn-ghost btn-sm" id="enStake">Stake for energy</button><button class="btn btn-ghost btn-sm" id="enUnstake">Unstake</button></div>
+      <div class="hint" style="margin-top:6px">Staking freezes TRX on the gas wallet to produce energy (reversible by unstaking; TRON enforces an unstake waiting period). Delegation to the sending wallet happens automatically on each transfer.</div>
+    </div></div>
+
     <div class="panel"><div class="panel-head"><h2>Branding</h2></div><div class="panel-body">
       <div class="field"><label>App name</label><input id="cfgAppName" class="input" value="${esc(c.app_name || "KryvonWallet")}"></div>
       <div class="field"><label>Customer wallet on-chain name (TRON)</label>
@@ -1315,6 +1333,11 @@ async function renderSettings(){
         auto_distribute_enabled: $("#cfgAuto").checked,
         app_name: $("#cfgAppName").value.trim() || "KryvonWallet",
         customer_onchain_name: $("#cfgOnName").value.trim(),
+        energy_mode: $("#cfgEnergyMode").value,
+        energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
+        energy_rental_url: $("#cfgRentUrl").value.trim(),
+        energy_rental_api_key: $("#cfgRentKey").value.trim(),
+        energy_rental_amount: parseFloat($("#cfgRentAmt").value) || 0,
         ..._brandPick,
       };
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
@@ -1339,6 +1362,17 @@ async function renderSettings(){
       const prev = document.getElementById(b.dataset.prev); if (prev) prev.innerHTML = '<span class="hint">none</span>';
       const inp = document.querySelector(`.brand-file[data-key="${b.dataset.key}"]`); if (inp) inp.value = "";
     });
+    async function loadEnergy(){
+      try {
+        const s = await api("/energy/status");
+        $("#enStatus").innerHTML = s.configured
+          ? `Mode: <b>${esc(s.mode)}</b> · Energy available: <b>${Number(s.energyAvailable||0).toLocaleString()}</b> · Staked (TronPower): <b>${Number(s.tronPowerLimit||0).toLocaleString()}</b> · Gas wallet TRX: <b>${Number(s.trx||0).toFixed(2)}</b>`
+          : "No gas/energy wallet yet — create the gas wallet first.";
+      } catch (e) { $("#enStatus").textContent = e.message; }
+    }
+    loadEnergy();
+    $("#enStake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to stake", true); act(() => api("/energy/stake", { method: "POST", body: { trx } }), "Staked for energy", loadEnergy); };
+    $("#enUnstake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to unstake", true); act(() => api("/energy/unstake", { method: "POST", body: { trx } }), "Unstake requested", loadEnergy); };
     const rv = $("#cfgKeyReveal");
     if (rv) rv.onclick = async () => {
       try { const r = await api("/admin/config/apikey"); $("#cfgKey").value = r.trongrid_api_key || ""; toast("Key shown in the field"); }

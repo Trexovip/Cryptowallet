@@ -251,6 +251,28 @@ Settings → **Branding**: set the **app name**, **logo** (shown in the header a
 QR codes), **favicon**, and an optional separate **QR logo**. Upload PNG/SVG (kept under ~500 KB,
 stored in config). Branding is served publicly so the login and setup pages theme correctly.
 
+## Gas & energy (lower fees)
+
+On TRON a USDT (TRC-20) transfer costs **Energy**. If a wallet has no energy, the network **burns
+TRX** for every transfer — the single biggest fee. Low-fee wallets avoid this by paying with Energy
+instead. Settings → **Gas & energy** offers three strategies:
+
+- **Burn TRX** (default): simplest, highest cost — no setup.
+- **Self-staked energy**: freeze (stake) TRX on the gas wallet to produce Energy, then the app
+  **delegates energy to the sending wallet automatically before each transfer** (Stake 2.0:
+  `freezeBalanceV2` + `delegateResource`). Frozen TRX is recoverable by unstaking (TRON enforces an
+  unstake waiting period). Set *Delegate per send* to enough frozen TRX to cover ~65,000 energy per
+  USDT transfer.
+- **Rent energy**: point the app at an energy-market provider endpoint (URL + API key + energy per
+  transfer); the app requests energy for the sending wallet before each transfer.
+
+The **Gas & energy** panel shows live energy available, staked TronPower, and the gas wallet's TRX,
+with **Stake / Unstake** controls. Energy provisioning is best-effort: if it fails, the transfer
+still goes through by burning TRX, so payouts never block.
+
+> Exact savings and how much to stake/rent depend on your transfer volume and the network's current
+> energy price — **rehearse on Nile testnet** and tune *Delegate per send* before going live.
+
 ## Programmatic API & exports
 
 **API keys** (admin → API keys): mint scoped keys (`read`, `deposits`, `payouts`). The key is

@@ -89,6 +89,39 @@ async function setAccountName(privHex, name) {
   return (res && (res.txid || (res.transaction && res.transaction.txID))) || "";
 }
 
+// ---- Energy (Stake 2.0) ----
+async function accountResources(address) {
+  const r = await base().trx.getAccountResources(address);
+  const energyLimit = Number(r.EnergyLimit || 0), energyUsed = Number(r.EnergyUsed || 0);
+  return {
+    energyLimit, energyUsed, energyAvailable: Math.max(0, energyLimit - energyUsed),
+    netLimit: Number(r.NetLimit || 0) + Number(r.freeNetLimit || 0),
+    netUsed: Number(r.NetUsed || 0) + Number(r.freeNetUsed || 0),
+    tronPowerLimit: Number(r.TronPowerLimit || 0),
+  };
+}
+async function _send(tw, unsigned) {
+  const signed = await tw.trx.sign(unsigned);
+  const res = await tw.trx.sendRawTransaction(signed);
+  return (res && (res.txid || (res.transaction && res.transaction.txID))) || "";
+}
+async function freezeEnergy(privHex, amountTrx) {
+  const tw = signer(String(privHex).replace(/^0x/, "")); const owner = tw.defaultAddress.base58;
+  return _send(tw, await tw.transactionBuilder.freezeBalanceV2(Math.round(Number(amountTrx) * 1e6), "ENERGY", owner));
+}
+async function unfreezeEnergy(privHex, amountTrx) {
+  const tw = signer(String(privHex).replace(/^0x/, "")); const owner = tw.defaultAddress.base58;
+  return _send(tw, await tw.transactionBuilder.unfreezeBalanceV2(Math.round(Number(amountTrx) * 1e6), "ENERGY", owner));
+}
+async function delegateEnergy(privHex, toAddress, amountTrx, lock = false, lockPeriod) {
+  const tw = signer(String(privHex).replace(/^0x/, "")); const owner = tw.defaultAddress.base58;
+  return _send(tw, await tw.transactionBuilder.delegateResource(Math.round(Number(amountTrx) * 1e6), toAddress, "ENERGY", owner, lock, lockPeriod));
+}
+async function undelegateEnergy(privHex, toAddress, amountTrx) {
+  const tw = signer(String(privHex).replace(/^0x/, "")); const owner = tw.defaultAddress.base58;
+  return _send(tw, await tw.transactionBuilder.undelegateResource(Math.round(Number(amountTrx) * 1e6), toAddress, "ENERGY", owner));
+}
+
 // Sign an arbitrary message with the wallet's key (for Tronscan ownership proof).
 async function signMessage(privHex, message) {
   const tw = signer(String(privHex).replace(/^0x/, ""));
@@ -96,4 +129,4 @@ async function signMessage(privHex, message) {
   return await tw.trx.sign(message);
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage };
+module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };

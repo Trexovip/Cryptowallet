@@ -10,6 +10,7 @@ const usdt = {};       // address -> USDT balance
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
+const _staked = {};    // address -> TRX frozen for energy (mock)
 const txid = () => crypto.randomBytes(32).toString("hex");
 const addrFromPk = (pk) => tw.address.fromPrivateKey(pk);
 const randAddr = () => { const b = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; return "T" + Array.from({length:33},()=>b[Math.floor(Math.random()*b.length)]).join(""); };
@@ -22,6 +23,11 @@ module.exports = {
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
   async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },
+  async accountResources(address) { const staked = _staked[address] || 0; const energy = Math.round(staked * 100); return { energyLimit: energy, energyUsed: 0, energyAvailable: energy, netLimit: 600, netUsed: 0, tronPowerLimit: staked }; },
+  async freezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = (_staked[a] || 0) + Number(trx); return txid(); },
+  async unfreezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = Math.max(0, (_staked[a] || 0) - Number(trx)); return txid(); },
+  async delegateEnergy() { return txid(); },
+  async undelegateEnergy() { return txid(); },
   __name(addr) { return names[addr]; },
   async sendUsdt(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);

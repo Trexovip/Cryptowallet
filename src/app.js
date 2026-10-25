@@ -385,6 +385,19 @@ app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, re
   res.json({ imported, skipped, errors });
 }));
 
+// Energy management: view resources, stake (freeze) or unstake (unfreeze) TRX for energy (admin).
+app.get("/energy/status", currentUser, adminRequired, wrap(async (_req, res) => res.json(await svc.energyStatus())));
+app.post("/energy/stake", currentUser, adminRequired, wrap(async (req, res) => {
+  const trx = Number((req.body || {}).trx || 0);
+  if (!(trx > 0)) return res.status(400).json({ detail: "trx must be greater than 0" });
+  const r = await svc.stakeEnergy(trx); svc.audit(req.user.id, "energy_stake", `${trx} TRX`, ip(req)); res.json(r);
+}));
+app.post("/energy/unstake", currentUser, adminRequired, wrap(async (req, res) => {
+  const trx = Number((req.body || {}).trx || 0);
+  if (!(trx > 0)) return res.status(400).json({ detail: "trx must be greater than 0" });
+  const r = await svc.unstakeEnergy(trx); svc.audit(req.user.id, "energy_unstake", `${trx} TRX`, ip(req)); res.json(r);
+}));
+
 // Apply the configured on-chain name to every existing customer deposit wallet (admin).
 app.post("/wallets/name-customers", currentUser, adminRequired, wrap(async (req, res) => {
   const tpl = config.get().customer_onchain_name != null ? config.get().customer_onchain_name : "KryvonWallet-{id}";
@@ -759,6 +772,11 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     favicon: c.favicon || "",
     qr_logo: c.qr_logo || "",
     customer_onchain_name: c.customer_onchain_name != null ? c.customer_onchain_name : "KryvonWallet-{id}",
+    energy_mode: c.energy_mode || "burn",
+    energy_delegate_trx: Number(c.energy_delegate_trx || 0),
+    energy_rental_url: c.energy_rental_url || "",
+    energy_rental_api_key: c.energy_rental_api_key || "",
+    energy_rental_amount: Number(c.energy_rental_amount != null ? c.energy_rental_amount : 65000),
     setup_at: c.setup_at || null,
   });
 });
@@ -784,6 +802,11 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   if (b.auto_distribute_enabled !== undefined) c.auto_distribute_enabled = !!b.auto_distribute_enabled;
   if (b.app_name !== undefined) c.app_name = String(b.app_name || "").trim().slice(0, 60) || "KryvonWallet";
   if (b.customer_onchain_name !== undefined) c.customer_onchain_name = String(b.customer_onchain_name || "").trim().slice(0, 64);
+  if (b.energy_mode !== undefined) c.energy_mode = ["burn", "stake", "rental"].includes(String(b.energy_mode)) ? String(b.energy_mode) : "burn";
+  if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
+  if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
+  if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
+  if (b.energy_rental_amount !== undefined) c.energy_rental_amount = Math.max(0, Number(b.energy_rental_amount) || 0);
   for (const k of ["brand_logo", "favicon", "qr_logo"]) {
     if (b[k] !== undefined) {
       const v = String(b[k] || "");
