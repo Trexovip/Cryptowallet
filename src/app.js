@@ -8,14 +8,21 @@ const svc = require("./services");
 
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 
 const PUBLIC = path.join(__dirname, "..", "public");
 app.use("/static", express.static(PUBLIC));
 
 const ip = (req) => (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "";
-const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null, auto_approve_limit: u.auto_approve_limit != null ? Number(u.auto_approve_limit) : null });
+const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null, auto_approve_limit: u.auto_approve_limit != null ? Number(u.auto_approve_limit) : null, phone: u.phone || null });
+const assignedStaffIds = (customerId) => getDb().prepare("SELECT staff_id FROM customer_staff WHERE customer_id=?").all(customerId).map((r) => r.staff_id);
+function canAccessCustomer(user, customerId) {
+  if (user.role === "admin") return true;
+  if (user.role === "customer") return Number(user.id) === Number(customerId);
+  if (user.role === "staff") return assignedStaffIds(customerId).includes(user.id);
+  return false;
+}
 const walletOut = (w) => ({ id: w.id, chain: w.chain, address: w.address, wtype: w.wtype, label: w.label, owner_user_id: w.owner_user_id, is_active: !!w.is_active });
 const moveOut = (m) => ({ id: m.id, kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, tx_hash: m.tx_hash, status: m.status, usd_rate: m.usd_rate, created_at: m.created_at });
 
@@ -85,6 +92,7 @@ app.use((req, res, next) => {
     req.path === "/setup" ||
     req.path.startsWith("/static/") ||
     req.path === "/health" ||
+    req.path === "/branding" ||
     req.path === "/api/setup/status" ||
     (req.path === "/api/setup" && req.method === "POST");
   if (allowed) return next();
@@ -96,6 +104,12 @@ app.use((req, res, next) => {
 app.get("/", (_req, res) => res.sendFile(path.join(PUBLIC, "index.html")));
 app.get("/setup", (_req, res) => res.sendFile(path.join(PUBLIC, "setup.html")));
 app.get("/health", (_req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
+
+// Public branding (logo, favicon, name) so the login/setup pages can theme before auth.
+app.get("/branding", (_req, res) => {
+  let c = {}; try { c = config.get(); } catch { c = {}; }
+  res.json({ app_name: c.app_name || "KryvonWallet", brand_logo: c.brand_logo || "", favicon: c.favicon || "", qr_logo: c.qr_logo || "" });
+});
 
 // ---------------- setup wizard API ----------------
 app.get("/api/setup/status", (_req, res) => res.json({ needs_setup: !config.isSetupComplete() }));
@@ -472,14 +486,14 @@ app.get("/disbursements", currentUser, (req, res) => {
 
 // ---------------- customers (managed by staff/admin) ----------------
 app.post("/customers", currentUser, staffOrAdmin, wrap(async (req, res) => {
-  const { username, password, customer_type, label, whitelist_address } = req.body || {};
+  const { username, password, customer_type, label, whitelist_address, phone } = req.body || {};
   if (String(username || "").length < 3) return res.status(400).json({ detail: "username too short" });
   if (String(password || "").length < 8) return res.status(400).json({ detail: "password must be at least 8 characters" });
   if (!["depositor", "remittance"].includes(customer_type)) return res.status(400).json({ detail: "customer_type must be depositor or remittance" });
   if (getDb().prepare("SELECT 1 FROM users WHERE username=?").get(username)) return res.status(400).json({ detail: "username exists" });
 
-  const info = getDb().prepare("INSERT INTO users(username,password_hash,role,is_active,customer_type,created_at) VALUES(?,?,'customer',1,?,?)")
-    .run(username, sec.hashPassword(password), customer_type, new Date().toISOString());
+  const info = getDb().prepare("INSERT INTO users(username,password_hash,role,is_active,customer_type,phone,created_at) VALUES(?,?,'customer',1,?,?,?)")
+    .run(username, sec.hashPassword(password), customer_type, String(phone || "").trim() || null, new Date().toISOString());
   const custId = info.lastInsertRowid;
   const out = { id: custId, username, role: "customer", customer_type };
 
@@ -500,7 +514,8 @@ app.get("/customers", currentUser, staffOrAdmin, (_req, res) => {
   res.json(rows.map((u) => {
     const wl = getDb().prepare("SELECT COUNT(*) c FROM customer_whitelist WHERE customer_id=? AND is_active=1").get(u.id).c;
     const dep = getDb().prepare("SELECT address FROM wallets WHERE owner_user_id=? AND wtype='deposit' LIMIT 1").get(u.id);
-    return { id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, whitelist_count: wl, deposit_address: dep ? dep.address : null };
+    const staffCount = getDb().prepare("SELECT COUNT(*) c FROM customer_staff WHERE customer_id=?").get(u.id).c;
+    return { id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, whitelist_count: wl, deposit_address: dep ? dep.address : null, phone: u.phone || null, staff_count: staffCount };
   }));
 });
 
@@ -509,7 +524,70 @@ app.get("/customers/:id", currentUser, staffOrAdmin, (req, res) => {
   if (!u) return res.status(404).json({ detail: "customer not found" });
   const whitelist = getDb().prepare("SELECT id,address,label,is_active FROM customer_whitelist WHERE customer_id=? AND is_active=1").all(u.id);
   const deposit_addresses = getDb().prepare("SELECT id,address,label FROM wallets WHERE owner_user_id=? AND wtype='deposit'").all(u.id);
-  res.json({ id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, whitelist, deposit_addresses });
+  const assigned_staff = getDb().prepare("SELECT u.id,u.username FROM customer_staff cs JOIN users u ON u.id=cs.staff_id WHERE cs.customer_id=?").all(u.id);
+  res.json({ id: u.id, username: u.username, customer_type: u.customer_type, is_active: !!u.is_active, phone: u.phone || null, whitelist, deposit_addresses, assigned_staff });
+});
+
+// assign / unassign staff to a customer (admin)
+app.post("/customers/:id/staff", currentUser, adminRequired, (req, res) => {
+  const u = getDb().prepare("SELECT * FROM users WHERE id=? AND role='customer'").get(req.params.id);
+  if (!u) return res.status(404).json({ detail: "customer not found" });
+  const staff = getDb().prepare("SELECT * FROM users WHERE id=?").get((req.body || {}).staff_id);
+  if (!staff || !["staff", "admin"].includes(staff.role)) return res.status(400).json({ detail: "pick a staff member" });
+  if (!getDb().prepare("SELECT 1 FROM customer_staff WHERE customer_id=? AND staff_id=?").get(u.id, staff.id))
+    getDb().prepare("INSERT INTO customer_staff(customer_id,staff_id,created_at) VALUES(?,?,?)").run(u.id, staff.id, new Date().toISOString());
+  svc.audit(req.user.id, "assign_staff", `${staff.username} -> customer #${u.id}`, ip(req));
+  res.json({ ok: true });
+});
+app.delete("/customers/:id/staff/:sid", currentUser, adminRequired, (req, res) => {
+  getDb().prepare("DELETE FROM customer_staff WHERE customer_id=? AND staff_id=?").run(req.params.id, req.params.sid);
+  svc.audit(req.user.id, "unassign_staff", `staff #${req.params.sid} x customer #${req.params.id}`, ip(req));
+  res.json({ ok: true });
+});
+
+// a staff member's assigned customers (admin sees all), with received totals + recent activity
+app.get("/my/customers", currentUser, staffOrAdmin, (req, res) => {
+  const db = getDb();
+  let custs;
+  if (req.user.role === "admin") custs = db.prepare("SELECT * FROM users WHERE role='customer' ORDER BY id").all();
+  else {
+    const ids = db.prepare("SELECT customer_id FROM customer_staff WHERE staff_id=?").all(req.user.id).map((r) => r.customer_id);
+    custs = ids.length ? db.prepare(`SELECT * FROM users WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) : [];
+  }
+  res.json(custs.map((u) => {
+    let total = 0, recent = [];
+    if (u.customer_type === "remittance") {
+      total = db.prepare("SELECT COALESCE(SUM(CAST(amount AS REAL)),0) s FROM disbursement_requests WHERE customer_id=? AND tx_hash IS NOT NULL").get(u.id).s;
+      recent = db.prepare("SELECT * FROM disbursement_requests WHERE customer_id=? ORDER BY id DESC LIMIT 5").all(u.id).map(disbOut);
+    } else {
+      const wids = db.prepare("SELECT id FROM wallets WHERE owner_user_id=? AND wtype='deposit'").all(u.id).map((w) => w.id);
+      if (wids.length) {
+        const inq = wids.map(() => "?").join(",");
+        total = db.prepare(`SELECT COALESCE(SUM(CAST(amount AS REAL)),0) s FROM movements WHERE kind='deposit_in' AND wallet_id IN (${inq})`).get(...wids).s;
+        recent = db.prepare(`SELECT * FROM movements WHERE kind='deposit_in' AND wallet_id IN (${inq}) ORDER BY id DESC LIMIT 5`).all(...wids).map(moveOut);
+      }
+    }
+    return { id: u.id, username: u.username, customer_type: u.customer_type, phone: u.phone || null, total_received: total, recent };
+  }));
+});
+
+// ---------------- messaging (customer thread) ----------------
+app.get("/customers/:id/messages", currentUser, (req, res) => {
+  if (!canAccessCustomer(req.user, req.params.id)) return res.status(403).json({ detail: "not permitted" });
+  const rows = getDb().prepare("SELECT * FROM messages WHERE customer_id=? ORDER BY id ASC LIMIT 500").all(req.params.id);
+  res.json(rows.map((m) => ({ id: m.id, sender_user_id: m.sender_user_id, sender_role: m.sender_role, sender_name: m.sender_name, body: m.body, kind: m.kind, ref_tx: m.ref_tx, created_at: m.created_at })));
+});
+app.post("/customers/:id/messages", currentUser, (req, res) => {
+  if (!canAccessCustomer(req.user, req.params.id)) return res.status(403).json({ detail: "not permitted" });
+  const cust = getDb().prepare("SELECT * FROM users WHERE id=? AND role='customer'").get(req.params.id);
+  if (!cust) return res.status(404).json({ detail: "customer not found" });
+  const { body, kind, ref_tx } = req.body || {};
+  const k = ["text", "receipt", "ack"].includes(kind) ? kind : "text";
+  if (!String(body || "").trim()) return res.status(400).json({ detail: "empty message" });
+  const info = getDb().prepare("INSERT INTO messages(customer_id,sender_user_id,sender_role,sender_name,body,kind,ref_tx,created_at) VALUES(?,?,?,?,?,?,?,?)")
+    .run(cust.id, req.user.id, req.user.role, req.user.username, String(body || ""), k, ref_tx ? String(ref_tx) : null, new Date().toISOString());
+  svc.audit(req.user.id, "message", `customer #${cust.id} (${k})`, ip(req));
+  res.json({ id: info.lastInsertRowid, kind: k });
 });
 
 app.post("/customers/:id/whitelist", currentUser, staffOrAdmin, (req, res) => {
@@ -615,6 +693,10 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     payout_allowlist_only: !!c.payout_allowlist_only,
     auto_distribute_enabled: !!c.auto_distribute_enabled,
     wallet_preload_trx: Number(c.wallet_preload_trx != null ? c.wallet_preload_trx : 30),
+    app_name: c.app_name || "KryvonWallet",
+    brand_logo: c.brand_logo || "",
+    favicon: c.favicon || "",
+    qr_logo: c.qr_logo || "",
     setup_at: c.setup_at || null,
   });
 });
@@ -638,6 +720,14 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   if (b.webhook_url !== undefined) c.webhook_url = String(b.webhook_url || "").trim();
   if (b.payout_allowlist_only !== undefined) c.payout_allowlist_only = !!b.payout_allowlist_only;
   if (b.auto_distribute_enabled !== undefined) c.auto_distribute_enabled = !!b.auto_distribute_enabled;
+  if (b.app_name !== undefined) c.app_name = String(b.app_name || "").trim().slice(0, 60) || "KryvonWallet";
+  for (const k of ["brand_logo", "favicon", "qr_logo"]) {
+    if (b[k] !== undefined) {
+      const v = String(b[k] || "");
+      if (v.length > 700000) return res.status(400).json({ detail: `${k} image is too large (keep under ~500 KB)` });
+      c[k] = v;
+    }
+  }
   if (c.tron_network === "mainnet" && !c.trongrid_api_key) return res.status(400).json({ detail: "mainnet requires a TronGrid API key" });
   config.save(c);
   svc.audit(req.user.id, "update_config", `network=${c.tron_network} contract=${c.usdt_contract}`, ip(req));

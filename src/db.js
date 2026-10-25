@@ -80,6 +80,23 @@ function getDb() {
       created_by INTEGER,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS customer_staff (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      staff_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      sender_user_id INTEGER,
+      sender_role TEXT,
+      sender_name TEXT,
+      body TEXT DEFAULT '',
+      kind TEXT DEFAULT 'text',   -- text | receipt | ack
+      ref_tx TEXT,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS api_keys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT DEFAULT '',
@@ -107,6 +124,7 @@ function getDb() {
   const ucols = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!ucols.includes("customer_type")) db.exec("ALTER TABLE users ADD COLUMN customer_type TEXT");
   if (!ucols.includes("auto_approve_limit")) db.exec("ALTER TABLE users ADD COLUMN auto_approve_limit REAL");
+  if (!ucols.includes("phone")) db.exec("ALTER TABLE users ADD COLUMN phone TEXT");
   const dcols = db.prepare("PRAGMA table_info(disbursement_requests)").all().map((c) => c.name);
   if (!dcols.includes("customer_id")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN customer_id INTEGER");
   if (!dcols.includes("idempotency_key")) db.exec("ALTER TABLE disbursement_requests ADD COLUMN idempotency_key TEXT");

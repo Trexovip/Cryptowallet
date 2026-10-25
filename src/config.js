@@ -25,6 +25,10 @@ const DEFAULTS = {
   payout_allowlist_only: false,  // if true, pool payouts only to address-book / whitelisted addresses
   auto_distribute_enabled: false, // worker periodically distributes treasury surplus to the pool
   wallet_preload_trx: 30,         // TRX sent from the gas wallet to each newly created wallet
+  app_name: "KryvonWallet",       // brand name shown in the UI
+  brand_logo: "",                 // data URL / URL of the header logo
+  favicon: "",                    // data URL / URL of the browser favicon
+  qr_logo: "",                    // data URL / URL placed in the centre of QR codes
 };
 
 let cfg = null;

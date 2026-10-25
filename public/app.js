@@ -99,18 +99,18 @@ function doLogout(){
 const NAV = {
   admin: [
     ["dashboard","Dashboard","◧"], ["wallets","Wallets","▦"], ["payouts","Payouts","↗"],
-    ["reports","Reports","▚"], ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"],
+    ["reports","Reports","▚"], ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["mycustomers","My customers","☏"], ["addressbook","Address book","▤"],
     ["staff","Staff","☷"], ["settings","Settings","⚙"], ["apikeys","API keys","⚿"], ["backup","Backup","⤓"], ["audit","Audit log","❏"]
   ],
   staff: [
     ["dashboard","Dashboard","◧"], ["wallets","Receive","▦"], ["payouts","Payouts","↗"],
-    ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"]
+    ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["mycustomers","My customers","☏"], ["addressbook","Address book","▤"]
   ],
   customer_depositor: [
-    ["dashboard","Overview","◧"], ["wallets","Deposit address","▦"], ["payouts","Deposits","↙"]
+    ["dashboard","Overview","◧"], ["wallets","Deposit address","▦"], ["payouts","Deposits","↙"], ["messages","Messages","✉"]
   ],
   customer_remittance: [
-    ["dashboard","Overview","◧"], ["wallets","Whitelist","▦"], ["payouts","Transfers","↙"]
+    ["dashboard","Overview","◧"], ["wallets","Whitelist","▦"], ["payouts","Transfers","↙"], ["messages","Messages","✉"]
   ]
 };
 const navKey = () => state.user.role === "customer" ? "customer_" + state.user.customer_type : state.user.role;
@@ -127,11 +127,11 @@ function route(sec){
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
   $("#sec-" + sec).classList.add("active");
   const map = state.user.role === "customer"
-    ? { dashboard:renderCustomerDashboard, wallets:renderCustomerAssets, payouts:renderCustomerHistory }
+    ? { dashboard:renderCustomerDashboard, wallets:renderCustomerAssets, payouts:renderCustomerHistory, messages:renderCustomerMessages }
     : { dashboard:renderDashboard, wallets:renderWallets, payouts:renderPayouts,
         staff:renderStaff, audit:renderAudit, customers:renderCustomers,
         addressbook:renderAddressBook, settings:renderSettings, transactions:renderTransactions,
-        apikeys:renderApiKeys, reports:renderReports, backup:renderBackup };
+        apikeys:renderApiKeys, reports:renderReports, backup:renderBackup, mycustomers:renderMyCustomers };
   const fn = map[sec];
   if (fn) fn();
 }
@@ -399,7 +399,7 @@ async function renderReceive(sec){
           <div style="flex:1;min-width:220px">
             <div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
             <div class="recv-addr">${esc(w.address)}</div>
-            <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}">Share</button></div>
+            <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}" data-qrcustomer="${esc(state.user.username)}">Share</button></div>
           </div></div></div></div>`).join("");
     wallets.forEach(w => { new QRCode($("#qr-"+w.id), { text:w.address, width:132, height:132,
       correctLevel: QRCode.CorrectLevel.M }); });
@@ -656,7 +656,7 @@ document.addEventListener("click", (e) => {
   const ut = e.target.closest("[data-usertx]");
   if (ut){ openUserTx(ut.dataset.usertx); return; }
   const q = e.target.closest("[data-qr]");
-  if (q){ showQr(q.dataset.qr, q.dataset.qrlabel); return; }
+  if (q){ showQr(q.dataset.qr, q.dataset.qrlabel, q.dataset.qrcustomer); return; }
   const c = e.target.closest("[data-copy]");
   if (c){ copy(c.dataset.copy); return; }
   const rc = e.target.closest("[data-receipt]");
@@ -666,6 +666,91 @@ document.addEventListener("click", (e) => {
 });
 
 /* ---------- boot ---------- */
+/* ---------- messaging ---------- */
+function threadBubble(m){
+  const mine = m.sender_user_id === state.user.id;
+  const who = esc(m.sender_name || "—") + (m.sender_role ? ` · ${esc(m.sender_role)}` : "");
+  const tag = m.kind === "receipt" ? ' <span class="role-pill">receipt</span>' : m.kind === "ack" ? ' <span class="role-pill">ack</span>' : "";
+  return `<div style="display:flex;justify-content:${mine ? "flex-end" : "flex-start"};margin:6px 0">
+    <div style="max-width:80%;background:${mine ? "var(--accent-soft)" : "var(--surface-2)"};border:1px solid var(--line);border-radius:12px;padding:8px 12px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">${who}${tag}</div>
+      <div style="font-size:14px;white-space:pre-wrap;word-break:break-word">${esc(m.body)}</div>
+      <div style="font-size:10px;color:var(--faint);margin-top:3px">${esc((m.created_at || "").replace("T", " ").slice(0, 16))}</div>
+    </div></div>`;
+}
+async function mountThread(rootEl, customerId, opts = {}){
+  rootEl.innerHTML = `<div class="th-messages" style="max-height:46vh;overflow-y:auto;padding:4px 2px;border:1px solid var(--line);border-radius:10px;background:var(--surface)"></div>
+    <div class="form-actions" style="margin-top:10px"><input class="input th-input" placeholder="Type a message…" style="flex:1"><button class="btn btn-primary btn-sm th-send">Send</button></div>
+    <div class="form-actions th-quick" style="margin-top:8px"></div>`;
+  const msgsEl = rootEl.querySelector(".th-messages");
+  const load = async () => { try { const msgs = await api("/customers/" + customerId + "/messages"); msgsEl.innerHTML = msgs.length ? msgs.map(threadBubble).join("") : `<div class="empty">No messages yet.</div>`; msgsEl.scrollTop = msgsEl.scrollHeight; } catch (e) { msgsEl.innerHTML = emptyState(e.message); } };
+  const send = async (body, kind) => { if (!String(body || "").trim()) return; try { await api("/customers/" + customerId + "/messages", { method: "POST", body: { body, kind: kind || "text" } }); await load(); } catch (e) { toast(e.message, true); } };
+  rootEl.querySelector(".th-send").onclick = () => { const i = rootEl.querySelector(".th-input"); const v = i.value; i.value = ""; send(v, "text"); };
+  rootEl.querySelector(".th-input").addEventListener("keydown", (e) => { if (e.key === "Enter") { const v = e.target.value; e.target.value = ""; send(v, "text"); } });
+  const quick = rootEl.querySelector(".th-quick"); let q = "";
+  if (opts.canAck) q += `<button class="btn btn-ghost btn-sm th-ack">Acknowledge received</button>`;
+  if (opts.receiptSeed) q += `<button class="btn btn-ghost btn-sm th-receipt">Send receipt</button>`;
+  quick.innerHTML = q;
+  const ab = rootEl.querySelector(".th-ack"); if (ab) ab.onclick = () => send("Payment received — thank you.", "ack");
+  const rb = rootEl.querySelector(".th-receipt"); if (rb) rb.onclick = () => send(opts.receiptSeed, "receipt");
+  await load();
+}
+function ensureThreadModal(){
+  if ($("#thBack")) return;
+  const d = document.createElement("div"); d.id = "thBack"; d.className = "modal-back";
+  d.innerHTML = `<div class="modal"><div class="modal-head"><h3 id="thTitle">Messages</h3></div><div class="modal-body" id="thRoot"></div><div class="modal-foot"><button class="btn btn-ghost" id="thClose">Close</button></div></div>`;
+  document.body.appendChild(d);
+  $("#thClose").onclick = () => d.classList.remove("show");
+  d.addEventListener("click", (e) => { if (e.target === d) d.classList.remove("show"); });
+}
+async function openThread(customerId, title, opts){
+  ensureThreadModal();
+  $("#thTitle").textContent = title || "Messages";
+  $("#thBack").classList.add("show");
+  await mountThread($("#thRoot"), customerId, opts || {});
+}
+function receiptSeedFrom(rec){
+  if (!rec || !rec.length) return "";
+  const r = rec[0];
+  const amt = r.amount != null ? fmtUsdt(r.amount) : "";
+  const tx = r.tx_hash || "";
+  return `KryvonWallet receipt\nAmount: ${amt} USDT\n${r.to_address ? "To: " + r.to_address + "\n" : ""}${tx ? "Tx: " + tx : ""}`;
+}
+
+/* ---------- my customers (staff/admin) ---------- */
+async function renderMyCustomers(){
+  const sec = $("#sec-mycustomers");
+  sec.innerHTML = `<div class="page-head"><h1>My customers</h1><p>Customers assigned to you — received funds and messaging.</p></div><div id="mcBody">Loading…</div>`;
+  try{
+    const list = await api("/my/customers");
+    if (!list.length) { $("#mcBody").innerHTML = emptyState("No customers assigned to you yet."); return; }
+    $("#mcBody").innerHTML = list.map((c) => `<div class="panel"><div class="panel-head">
+        <h2>${esc(c.username)} <span class="role-pill">${esc(c.customer_type)}</span></h2>
+        <div class="row-actions">
+          <button class="btn btn-ghost btn-sm mc-msg" data-id="${c.id}" data-name="${esc(c.username)}" data-phone="${esc(c.phone || "")}">Messages</button>
+        </div></div>
+      <div class="panel-body">
+        <div class="stat-row"><div class="s"><div class="n num">${fmtUsdt(c.total_received)}</div><div class="l">Total received (USDT)</div></div>
+          ${c.phone ? `<div class="s"><div class="n" style="font-size:14px">${esc(c.phone)}</div><div class="l">Phone</div></div>` : ""}</div>
+        <div class="panel-body flush" style="padding:0;margin-top:10px">${(c.recent && c.recent.length)
+          ? `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>${c.customer_type === "remittance" ? "To" : "From"}</th><th class="amt">Amount</th><th>Status</th></tr></thead><tbody>
+             ${c.recent.map((r) => `<tr><td>${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
+               <td>${addrHtml(c.customer_type === "remittance" ? r.to_address : r.from_address)}</td>
+               <td class="amt num">${fmtUsdt(r.amount)} USDT</td><td>${statusBadge(r.status)}</td></tr>`).join("")}</tbody></table></div>`
+          : emptyState("No activity yet.")}</div>
+      </div></div>`).join("");
+    list.forEach((c) => {});
+    document.querySelectorAll(".mc-msg").forEach((b) => b.onclick = () => openThread(Number(b.dataset.id), "Messages · " + b.dataset.name, { phone: b.dataset.phone || null, receiptSeed: receiptSeedFrom(list.find((x) => x.id === Number(b.dataset.id)).recent) }));
+  }catch(e){ $("#mcBody").innerHTML = emptyState(e.message); }
+}
+
+/* ---------- customer messages (portal) ---------- */
+async function renderCustomerMessages(){
+  const sec = $("#sec-messages");
+  sec.innerHTML = `<div class="page-head"><h1>Messages</h1><p>Chat with your account team.</p></div><div class="panel"><div class="panel-body" id="cmRoot">Loading…</div></div>`;
+  await mountThread($("#cmRoot"), state.user.id, { canAck: true });
+}
+
 /* ---------- customers management (admin/staff) ---------- */
 let selectedCustomer = null;
 async function renderCustomers(){
@@ -691,6 +776,7 @@ function customerForm(){
       <div class="field"><label>Temporary password</label><input id="cPass" class="input" type="text" placeholder="min 8 characters"></div>
       <div class="field"><label>Label (optional)</label><input id="cLabel" class="input" placeholder="name / reference"></div>
     </div>
+    <div class="field"><label>Phone (optional)</label><input id="cPhone" class="input" placeholder="+15551234567"></div>
     <div class="field" id="cWlField" style="display:none"><label>Whitelisted payout address (TRC-20)</label><input id="cWl" class="input mono" placeholder="T…"></div>
     <button class="btn btn-primary" id="cCreate">Create customer</button></div></div>`;
 }
@@ -699,7 +785,7 @@ function wireCustomerForm(){
   const toggle = () => { $("#cWlField").style.display = typeSel.value === "remittance" ? "" : "none"; };
   typeSel.onchange = toggle; toggle();
   $("#cCreate").onclick = () => {
-    const body = { username: $("#cUser").value.trim(), password: $("#cPass").value, customer_type: typeSel.value, label: $("#cLabel").value.trim() };
+    const body = { username: $("#cUser").value.trim(), password: $("#cPass").value, customer_type: typeSel.value, label: $("#cLabel").value.trim(), phone: $("#cPhone").value.trim() };
     if (typeSel.value === "remittance") body.whitelist_address = $("#cWl").value.trim();
     if (body.username.length < 3) return toast("Username too short", true);
     if (body.password.length < 8) return toast("Password must be at least 8 characters", true);
@@ -719,44 +805,67 @@ async function openCustomer(id){
   selectedCustomer = id;
   const d = $("#custDetail"); d.innerHTML = "Loading…";
   try{
-    const c = await api("/customers/" + id);
+    const [c, users] = await Promise.all([api("/customers/" + id), api("/users")]);
+    let main = "";
     if (c.customer_type === "depositor"){
-      d.innerHTML = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · depositor</h2></div><div class="panel-body">
+      main = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · depositor</h2></div><div class="panel-body">
         ${c.deposit_addresses.map(w => `<div style="margin-bottom:14px"><div class="recv-addr">${esc(w.address)}</div>
           <div class="form-actions" style="margin-top:6px">
             <button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy</button>
-            <button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label || c.username)}">QR</button>
+            <button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label || c.username)}" data-qrcustomer="${esc(c.username)}">QR</button>
             <button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button>
           </div></div>`).join("") || emptyState("No deposit address.")}
         <div class="hint">Deposits here settle to treasury automatically; the customer sees them in their portal.</div></div></div>`;
-      return;
+    } else {
+      const wl = c.whitelist.map(w => `<tr><td>${addrHtml(w.address)}</td><td>${esc(w.label||"—")}</td>
+        <td class="row-actions"><button class="btn btn-ghost btn-sm wl-del" data-wid="${w.id}">Remove</button></td></tr>`).join("");
+      main = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · remittance</h2></div>
+        <div class="panel-body flush">${c.whitelist.length ? `<table><thead><tr><th>Whitelisted address</th><th>Label</th><th></th></tr></thead><tbody>${wl}</tbody></table>` : emptyState("No whitelisted addresses yet.")}</div>
+        <div class="panel-body"><div class="form-grid">
+          <div class="field"><label>Add whitelisted address</label><input id="wlAddr" class="input mono" placeholder="T…"></div>
+          <div class="field"><label>Label</label><input id="wlLabel" class="input" placeholder="optional"></div>
+        </div><button class="btn btn-ghost btn-sm" id="wlAdd">Add address</button></div></div>
+        <div class="panel"><div class="panel-head"><h2>Send payout to ${esc(c.username)}</h2></div><div class="panel-body">
+        ${c.whitelist.length ? `<div class="form-grid">
+          <div class="field"><label>Amount (USDT)</label><input id="poAmt" class="input" type="number" step="0.01" min="0" placeholder="0.00"></div>
+          <div class="field"><label>To whitelisted address</label><select id="poAddr" class="input">${c.whitelist.map(w => `<option value="${esc(w.address)}">${esc(w.label ? w.label + " — " : "")}${esc(shortAddr(w.address))}</option>`).join("")}</select></div>
+        </div>
+        <div class="field"><label>Reason / reference (optional)</label><input id="poReason" class="input" placeholder="e.g. invoice #123"></div>
+        <button class="btn btn-primary" id="poSend">Create payout</button>
+        <div class="hint" style="margin-top:6px">Creates a payout to a whitelisted address; an admin approves it in Payouts.</div>`
+        : emptyState("Add a whitelisted address before sending a payout.")}
+        </div></div>`;
     }
-    const wl = c.whitelist.map(w => `<tr><td>${addrHtml(w.address)}</td><td>${esc(w.label||"—")}</td>
-      <td class="row-actions"><button class="btn btn-ghost btn-sm wl-del" data-wid="${w.id}">Remove</button></td></tr>`).join("");
-    d.innerHTML = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · remittance</h2></div>
-      <div class="panel-body flush">${c.whitelist.length ? `<table><thead><tr><th>Whitelisted address</th><th>Label</th><th></th></tr></thead><tbody>${wl}</tbody></table>` : emptyState("No whitelisted addresses yet.")}</div>
-      <div class="panel-body"><div class="form-grid">
-        <div class="field"><label>Add whitelisted address</label><input id="wlAddr" class="input mono" placeholder="T…"></div>
-        <div class="field"><label>Label</label><input id="wlLabel" class="input" placeholder="optional"></div>
-      </div><button class="btn btn-ghost btn-sm" id="wlAdd">Add address</button></div></div>
-      <div class="panel"><div class="panel-head"><h2>Send payout to ${esc(c.username)}</h2></div><div class="panel-body">
-      ${c.whitelist.length ? `<div class="form-grid">
-        <div class="field"><label>Amount (USDT)</label><input id="poAmt" class="input" type="number" step="0.01" min="0" placeholder="0.00"></div>
-        <div class="field"><label>To whitelisted address</label><select id="poAddr" class="input">${c.whitelist.map(w => `<option value="${esc(w.address)}">${esc(w.label ? w.label + " — " : "")}${esc(shortAddr(w.address))}</option>`).join("")}</select></div>
-      </div>
-      <div class="field"><label>Reason / reference (optional)</label><input id="poReason" class="input" placeholder="e.g. invoice #123"></div>
-      <button class="btn btn-primary" id="poSend">Create payout</button>
-      <div class="hint" style="margin-top:6px">Creates a payout to a whitelisted address; an admin approves it in Payouts.</div>`
-      : emptyState("Add a whitelisted address before sending a payout.")}
-      </div></div>`;
-    document.querySelectorAll(".wl-del").forEach(b => b.onclick = () =>
-      act(() => api("/customers/" + id + "/whitelist/" + b.dataset.wid, { method:"DELETE" }), "Address removed", () => openCustomer(id)));
-    const add = $("#wlAdd");
-    if (add) add.onclick = () => { const address = $("#wlAddr").value.trim(); if (!address) return toast("Enter an address", true);
-      act(() => api("/customers/" + id + "/whitelist", { method:"POST", body:{ address, label: $("#wlLabel").value.trim() } }), "Address whitelisted", () => openCustomer(id)); };
-    const send = $("#poSend");
-    if (send) send.onclick = () => { const amt = parseFloat($("#poAmt").value); if (!(amt > 0)) return toast("Enter a valid amount", true);
-      act(() => api("/disbursements", { method:"POST", body:{ customer_id: id, amount: amt, to_address: $("#poAddr").value, reason: $("#poReason").value.trim() } }), "Payout created — pending admin approval", () => openCustomer(id)); };
+
+    const assigned = c.assigned_staff || [];
+    const staffOptions = users.filter(u => ["staff", "admin"].includes(u.role) && !assigned.some(a => a.id === u.id))
+      .map(u => `<option value="${u.id}">${esc(u.username)} (${esc(u.role)})</option>`).join("");
+    const staffPanel = `<div class="panel"><div class="panel-head"><h2>Assigned staff</h2></div>
+      <div class="panel-body flush">${assigned.length ? `<table><thead><tr><th>User</th><th></th></tr></thead><tbody>${assigned.map(s => `<tr><td>${esc(s.username)}</td><td class="row-actions"><button class="btn btn-ghost btn-sm as-del" data-sid="${s.id}">Remove</button></td></tr>`).join("")}</tbody></table>` : emptyState("No staff assigned.")}</div>
+      <div class="panel-body"><div class="form-actions">
+        <select id="asSel" class="input" style="max-width:280px">${staffOptions || '<option value="">Everyone already assigned</option>'}</select>
+        <button class="btn btn-primary btn-sm" id="asAdd" ${staffOptions ? "" : "disabled"}>Assign staff</button></div></div></div>`;
+    const commsPanel = `<div class="panel"><div class="panel-head"><h2>Messaging</h2></div><div class="panel-body">
+      <div class="hint" style="margin-bottom:8px">Phone: ${c.phone ? esc(c.phone) : "—"}</div>
+      <div class="form-actions"><button class="btn btn-primary btn-sm" id="cuMsg">Open messages</button></div></div></div>`;
+
+    d.innerHTML = main + staffPanel + commsPanel;
+
+    if (c.customer_type === "remittance") {
+      document.querySelectorAll(".wl-del").forEach(b => b.onclick = () =>
+        act(() => api("/customers/" + id + "/whitelist/" + b.dataset.wid, { method:"DELETE" }), "Address removed", () => openCustomer(id)));
+      const add = $("#wlAdd");
+      if (add) add.onclick = () => { const address = $("#wlAddr").value.trim(); if (!address) return toast("Enter an address", true);
+        act(() => api("/customers/" + id + "/whitelist", { method:"POST", body:{ address, label: $("#wlLabel").value.trim() } }), "Address whitelisted", () => openCustomer(id)); };
+      const send = $("#poSend");
+      if (send) send.onclick = () => { const amt = parseFloat($("#poAmt").value); if (!(amt > 0)) return toast("Enter a valid amount", true);
+        act(() => api("/disbursements", { method:"POST", body:{ customer_id: id, amount: amt, to_address: $("#poAddr").value, reason: $("#poReason").value.trim() } }), "Payout created — pending admin approval", () => openCustomer(id)); };
+    }
+    document.querySelectorAll(".as-del").forEach(b => b.onclick = () =>
+      act(() => api("/customers/" + id + "/staff/" + b.dataset.sid, { method:"DELETE" }), "Staff unassigned", () => openCustomer(id)));
+    const asAdd = $("#asAdd");
+    if (asAdd) asAdd.onclick = () => { const sid = $("#asSel").value; if (!sid) return; act(() => api("/customers/" + id + "/staff", { method:"POST", body:{ staff_id: Number(sid) } }), "Staff assigned", () => openCustomer(id)); };
+    const cuMsg = $("#cuMsg"); if (cuMsg) cuMsg.onclick = () => openThread(id, "Messages · " + c.username, { phone: c.phone || null });
   }catch(e){ d.innerHTML = emptyState(e.message); }
 }
 
@@ -789,7 +898,7 @@ async function renderCustomerAssets(){
           <div class="panel-body"><div class="qr-wrap"><div class="qr-box" id="cqr-${w.id}"></div>
           <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
           <div class="recv-addr">${esc(w.address)}</div>
-          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}">Share</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
+          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}" data-qrcustomer="${esc(state.user.username)}">Share</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
       me.deposit_addresses.forEach(w => { try { new QRCode($("#cqr-" + w.id), { text:w.address, width:132, height:132, correctLevel: QRCode.CorrectLevel.M }); } catch(e){} });
     } else {
       sec.innerHTML = `<div class="page-head"><h1>Your whitelisted addresses</h1><p>Payouts can only be sent to these approved addresses. Contact support to change them.</p></div>
@@ -1058,7 +1167,18 @@ async function renderAddressBook(){
 }
 
 /* ---------- settings (admin) ---------- */
+let _brandPick = {};
+function fileToDataUrl(file){ return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }); }
+function brandRow(label, id, key, cur){
+  return `<div class="field"><label>${label}</label>
+    <div class="form-actions">
+      <span id="prev-${id}" style="display:inline-flex;width:40px;height:40px;border:1px solid var(--line);border-radius:8px;overflow:hidden;align-items:center;justify-content:center;background:var(--surface-2)">${cur ? `<img src="${cur}" style="width:100%;height:100%;object-fit:contain">` : '<span class="hint">none</span>'}</span>
+      <input type="file" accept="image/*" class="input brand-file" data-key="${key}" data-prev="prev-${id}" style="max-width:260px">
+      <button class="btn btn-ghost btn-sm brand-clear" data-key="${key}" data-prev="prev-${id}">Remove</button>
+    </div></div>`;
+}
 async function renderSettings(){
+  _brandPick = {};
   const sec = $("#sec-settings");
   sec.innerHTML = `<div class="page-head"><h1>Settings</h1><p>Operational configuration, keys, and policy.</p></div><div id="stBody">Loading…</div>`;
   try{
@@ -1115,6 +1235,14 @@ async function renderSettings(){
       <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAuto" ${c.auto_distribute_enabled ? "checked" : ""}> Auto-distribute treasury surplus to the pool periodically</label></div>
     </div></div>
 
+    <div class="panel"><div class="panel-head"><h2>Branding</h2></div><div class="panel-body">
+      <div class="field"><label>App name</label><input id="cfgAppName" class="input" value="${esc(c.app_name || "KryvonWallet")}"></div>
+      ${brandRow("Brand logo (header + QR centre)", "logo", "brand_logo", c.brand_logo)}
+      ${brandRow("Favicon", "fav", "favicon", c.favicon)}
+      ${brandRow("QR logo (centre of QR — falls back to brand logo)", "qrl", "qr_logo", c.qr_logo)}
+      <div class="hint">PNG/SVG, square works best, keep under ~500 KB.</div>
+    </div></div>
+
     <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
@@ -1136,10 +1264,23 @@ async function renderSettings(){
         webhook_url: $("#cfgHook").value.trim(),
         payout_allowlist_only: $("#cfgAllow").checked,
         auto_distribute_enabled: $("#cfgAuto").checked,
+        app_name: $("#cfgAppName").value.trim() || "KryvonWallet",
+        ..._brandPick,
       };
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
-      act(() => api("/admin/config", {method:"POST", body}), "Settings saved", renderSettings);
+      act(() => api("/admin/config", {method:"POST", body}), "Settings saved", () => { applyBranding(); renderSettings(); });
     };
+    document.querySelectorAll(".brand-file").forEach((inp) => inp.onchange = async () => {
+      const f = inp.files && inp.files[0]; if (!f) return;
+      if (f.size > 500000) return toast("Image too large — keep under 500 KB", true);
+      const url = await fileToDataUrl(f); _brandPick[inp.dataset.key] = url;
+      const prev = document.getElementById(inp.dataset.prev); if (prev) prev.innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:contain">`;
+    });
+    document.querySelectorAll(".brand-clear").forEach((b) => b.onclick = () => {
+      _brandPick[b.dataset.key] = "";
+      const prev = document.getElementById(b.dataset.prev); if (prev) prev.innerHTML = '<span class="hint">none</span>';
+      const inp = document.querySelector(`.brand-file[data-key="${b.dataset.key}"]`); if (inp) inp.value = "";
+    });
     const rv = $("#cfgKeyReveal");
     if (rv) rv.onclick = async () => {
       try { const r = await api("/admin/config/apikey"); $("#cfgKey").value = r.trongrid_api_key || ""; toast("Key shown in the field"); }
@@ -1172,38 +1313,72 @@ function ensureQrModal(){
   $("#qrDownload").onclick = qrDownload;
   $("#qrShare").onclick = qrShare;
 }
-function qrDataUrl(){
-  const box = $("#qrBox");
-  const c = box && box.querySelector("canvas");
-  if (c) { try { return c.toDataURL("image/png"); } catch (e) {} }
-  const img = box && box.querySelector("img");
-  return img ? img.src : null;
+function roundRect(ctx, x, y, w, h, r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+function loadImg(src){ return new Promise((res) => { if (!src) return res(null); const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; }); }
+async function makeQrCanvas(address, size){
+  const tmp = document.createElement("div");
+  try { new QRCode(tmp, { text: address, width: size, height: size, correctLevel: QRCode.CorrectLevel.H }); } catch (e) {}
+  let canvas = tmp.querySelector("canvas");
+  if (!canvas) {
+    const img = tmp.querySelector("img");
+    canvas = document.createElement("canvas"); canvas.width = size; canvas.height = size;
+    if (img) { await new Promise((r) => { if (img.complete) r(); else img.onload = r; }); try { canvas.getContext("2d").drawImage(img, 0, 0, size, size); } catch (e) {} }
+  }
+  const logoSrc = (state.branding && (state.branding.qr_logo || state.branding.brand_logo)) || "";
+  const logo = await loadImg(logoSrc);
+  if (logo) {
+    const ctx = canvas.getContext("2d"); const s = Math.round(size * 0.22); const x = (size - s) / 2, y = (size - s) / 2, pad = s * 0.14;
+    ctx.fillStyle = "#fff"; roundRect(ctx, x - pad, y - pad, s + pad * 2, s + pad * 2, 8); ctx.fill();
+    try { ctx.drawImage(logo, x, y, s, s); } catch (e) {}
+  }
+  return canvas;
 }
-function qrDownload(){
-  const url = qrDataUrl(); if (!url) return toast("QR not ready", true);
-  const a = document.createElement("a"); a.href = url; a.download = (_qrCur.label || "KryvonWallet").replace(/\s+/g, "-") + "-qr.png";
-  document.body.appendChild(a); a.click(); a.remove(); toast("QR downloaded");
+async function composeCard(){
+  const qr = await makeQrCanvas(_qrCur.address, 360);
+  const W = 520, H = 700, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#0E9F6E"; ctx.fillRect(0, 0, W, 8);
+  ctx.textAlign = "center";
+  const name = (state.branding && state.branding.app_name) || "KryvonWallet";
+  let y = 46;
+  const logo = await loadImg((state.branding && state.branding.brand_logo) || "");
+  if (logo) { const lw = 120, lh = Math.min(64, lw * (logo.height / logo.width || 1)); ctx.drawImage(logo, (W - lw) / 2, y - 24, lw, lh); y += lh; }
+  ctx.fillStyle = "#0B1220"; ctx.font = "700 22px Inter, Arial, sans-serif"; ctx.fillText(name, W / 2, y); y += 10;
+  if (_qrCur.label) { y += 30; ctx.font = "600 19px Inter, Arial, sans-serif"; ctx.fillStyle = "#0B1220"; ctx.fillText(_qrCur.label, W / 2, y); }
+  if (_qrCur.customerName) { y += 24; ctx.font = "400 14px Inter, Arial, sans-serif"; ctx.fillStyle = "#5A6472"; ctx.fillText("Customer: " + _qrCur.customerName, W / 2, y); }
+  y += 26; const qs = 340; ctx.drawImage(qr, (W - qs) / 2, y, qs, qs); y += qs + 34;
+  ctx.font = "13px ui-monospace, monospace"; ctx.fillStyle = "#0B1220";
+  const a = _qrCur.address, mid = Math.ceil(a.length / 2);
+  ctx.fillText(a.slice(0, mid), W / 2, y); ctx.fillText(a.slice(mid), W / 2, y + 18); y += 42;
+  ctx.font = "12px Inter, Arial, sans-serif"; ctx.fillStyle = "#94A0B0"; ctx.fillText("TRC-20 USDT", W / 2, y);
+  return c.toDataURL("image/png");
+}
+function cardFileName(){ return ((_qrCur.customerName || _qrCur.label || "wallet") + "").replace(/\s+/g, "-") + "-qr.png"; }
+async function qrDownload(){
+  try { const url = await composeCard(); const a = document.createElement("a"); a.href = url; a.download = cardFileName(); document.body.appendChild(a); a.click(); a.remove(); toast("QR card downloaded"); }
+  catch (e) { toast("Could not build QR", true); }
 }
 async function qrShare(){
-  const text = `${_qrCur.label || "KryvonWallet"} — USDT (TRC-20)\n${_qrCur.address}`;
+  const text = `${_qrCur.label || "KryvonWallet"}${_qrCur.customerName ? " — " + _qrCur.customerName : ""}\nUSDT (TRC-20): ${_qrCur.address}`;
   try {
-    const url = qrDataUrl();
-    if (url && navigator.canShare) {
+    const url = await composeCard();
+    if (navigator.canShare) {
       const blob = await (await fetch(url)).blob();
-      const file = new File([blob], (_qrCur.label || "KryvonWallet").replace(/\s+/g, "-") + "-qr.png", { type: "image/png" });
+      const file = new File([blob], cardFileName(), { type: "image/png" });
       if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: _qrCur.label || "KryvonWallet", text }); return; }
     }
     if (navigator.share) { await navigator.share({ title: _qrCur.label || "KryvonWallet", text }); return; }
   } catch (e) { if (e && e.name === "AbortError") return; }
-  navigator.clipboard.writeText(text).then(() => toast("Address copied — ready to share"));
+  navigator.clipboard.writeText(text).then(() => toast("Details copied — ready to share"));
 }
-function showQr(address, label){
+async function showQr(address, label, customerName){
   ensureQrModal();
-  _qrCur = { address, label: label || "KryvonWallet" };
+  _qrCur = { address, label: label || "KryvonWallet", customerName: customerName || "" };
   $("#qrTitle").textContent = label || "Wallet address";
   $("#qrAddr").textContent = address;
-  const box = $("#qrBox"); box.innerHTML = "";
-  try { new QRCode(box, { text: address, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M }); } catch(e){}
+  const box = $("#qrBox"); box.innerHTML = "<span class='hint'>Generating…</span>";
+  try { const canvas = await makeQrCanvas(address, 180); box.innerHTML = ""; box.appendChild(canvas); } catch (e) { box.textContent = "QR error"; }
   $("#qrBack").classList.add("show");
 }
 
@@ -1227,7 +1402,20 @@ if ($("#themeBtn")) $("#themeBtn").onclick = () => {
 };
 $("#modalBack").addEventListener("click", (e) => { if (e.target === $("#modalBack")) $("#modalBack").classList.remove("show"); });
 
+async function applyBranding(){
+  try {
+    const b = await (await fetch("/branding")).json();
+    state.branding = b;
+    if (b.app_name) { document.querySelectorAll(".brand-name").forEach((e) => e.textContent = b.app_name); document.title = b.app_name; }
+    if (b.brand_logo) {
+      document.querySelectorAll(".brand-mark").forEach((e) => { e.innerHTML = `<img src="${b.brand_logo}" alt="" style="width:100%;height:100%;object-fit:contain;border-radius:inherit">`; e.style.background = "transparent"; });
+    }
+    if (b.favicon) { let l = document.querySelector("link[rel~='icon']"); if (!l) { l = document.createElement("link"); l.rel = "icon"; document.head.appendChild(l); } l.href = b.favicon; }
+  } catch (e) { /* keep defaults */ }
+}
+
 (async () => {
+  applyBranding();
   if (state.token){ try { await boot(); } catch { doLogout(); } }
   else { $("#login").style.display = "grid"; }
 })();

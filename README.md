@@ -146,8 +146,9 @@ and **reset a user's password**.
 
 ## Available-to-send & QR codes
 
-- **Share** a wallet address from any QR dialog: **Copy**, **Download** the QR as a PNG, or
-  **Share** (uses the device share sheet on mobile; falls back to copying the address + QR).
+- **Branded QR card**: any QR dialog can **Copy**, **Download**, or **Share** a composed card
+  showing your **logo in the centre of the QR**, the **wallet name**, the **customer name**, and the
+  **address** — as a PNG (share uses the device share sheet on mobile).
 
 - The **Payouts** screen shows an **Available to send** figure — total USDT across the treasury
   and all pool wallets — so staff can see the ceiling before attempting a large payout.
@@ -183,6 +184,15 @@ Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You c
   prominent public label is curated by Tronscan (verified entities apply for it), so a self-set
   on-chain name is not guaranteed to appear there.
 
+## Staff assignments & messaging
+
+- **Assign customers to staff** (admin, Customers → Manage → Assigned staff). A customer can be
+  assigned to multiple staff.
+- **My customers** (staff): each assigned customer with their **total received**, recent activity,
+  a **Messages** button, and a **WhatsApp** button.
+- **In-app messaging**: a chat thread per customer between the customer and their assigned staff
+  (and admins) — normal chat, **Send receipt** (staff), and **Acknowledge received** (customer).
+  Access is enforced: staff only see threads for customers assigned to them.
 ## Backup & restore (all wallets)
 
 A **Backup** page (admin) exports **every wallet** — type (treasury / gas / pool / customer),
@@ -211,6 +221,12 @@ Admin-only; every export and import is written to the audit log.
 - **Login rate-limiting** — repeated failed logins are locked out for a cooldown window.
 - **Scheduled auto-distribute** — optionally have the worker periodically distribute treasury
   surplus to the pool (respecting the hold-back %).
+
+### Branding
+
+Settings → **Branding**: set the **app name**, **logo** (shown in the header and in the centre of
+QR codes), **favicon**, and an optional separate **QR logo**. Upload PNG/SVG (kept under ~500 KB,
+stored in config). Branding is served publicly so the login and setup pages theme correctly.
 
 ## Programmatic API & exports
 
