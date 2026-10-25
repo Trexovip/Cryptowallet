@@ -14,7 +14,7 @@ function audit(userId, action, detail = "", ip = "") {
   getDb().prepare("INSERT INTO audit_log(user_id,action,detail,ip,created_at) VALUES(?,?,?,?,?)")
     .run(userId, action, detail, ip, now());
 }
-function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "pending", note = "", token = "USDT", usdRate = null } = {}) {
+function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "confirmed", note = "", token = "USDT", usdRate = null } = {}) {
   return getDb().prepare(
     `INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -169,7 +169,7 @@ async function scanAndSweep() {
     try {
       const pk = sec.decryptSecret(w.enc_privkey);
       const tx = await chain.sendUsdt(pk, treasury.address, bal);
-      record("sweep", w.address, treasury.address, bal, tx, { walletId: w.id, status: "pending", note: "sweep to treasury", usdRate: rate });
+      record("sweep", w.address, treasury.address, bal, tx, { walletId: w.id, note: "sweep to treasury", usdRate: rate });
       out.push({ wallet: w.address, swept: bal, tx });
     } catch (e) { out.push({ wallet: w.address, error: "sweep: " + e.message }); }
   }
@@ -248,7 +248,7 @@ async function executeDisbursement(req, approverId, cap = null) {
     { walletId: wallet.id, userId: req.staff_user_id, note: `payout req#${req.id}`, usdRate: rate });
   fireWebhook("payout.sent", { to: req.to_address, amount, tx, request_id: req.id });
 
-  db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
+  db.prepare("UPDATE disbursement_requests SET status='confirmed', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
     .run(approverId, wallet.id, tx, now(), req.id);
   return db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.id);
 }
