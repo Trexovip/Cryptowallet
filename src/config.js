@@ -24,6 +24,7 @@ const DEFAULTS = {
   webhook_url: "",               // POST deposit/payout events here; "" = disabled
   payout_allowlist_only: false,  // if true, pool payouts only to address-book / whitelisted addresses
   auto_distribute_enabled: false, // worker periodically distributes treasury surplus to the pool
+  wallet_preload_trx: 30,         // TRX sent from the gas wallet to each newly created wallet
 };
 
 let cfg = null;

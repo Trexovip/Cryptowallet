@@ -9,6 +9,7 @@ const tw = new TronWeb({ fullHost: "https://nile.trongrid.io" });
 const usdt = {};       // address -> USDT balance
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
+const names = {};      // address -> on-chain account name
 const txid = () => crypto.randomBytes(32).toString("hex");
 const addrFromPk = (pk) => tw.address.fromPrivateKey(pk);
 const randAddr = () => { const b = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; return "T" + Array.from({length:33},()=>b[Math.floor(Math.random()*b.length)]).join(""); };
@@ -19,6 +20,8 @@ module.exports = {
   async nativeBalance(addr) { return trx[addr] || 0; },
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
+  async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
+  __name(addr) { return names[addr]; },
   async sendUsdt(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);
     if ((usdt[from] || 0) + 1e-9 < amount) throw new Error("insufficient USDT (demo)");

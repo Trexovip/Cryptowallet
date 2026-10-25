@@ -79,4 +79,14 @@ function addressFromPrivateKey(privHex) {
   catch { return null; }
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey };
+// Set the on-chain account name (UpdateAccountContract). Can only be set once per account.
+async function setAccountName(privHex, name) {
+  const tw = signer(String(privHex).replace(/^0x/, ""));
+  const owner = tw.defaultAddress && tw.defaultAddress.base58;
+  const unsigned = await tw.transactionBuilder.updateAccount(name, owner);
+  const signed = await tw.trx.sign(unsigned);
+  const res = await tw.trx.sendRawTransaction(signed);
+  return (res && (res.txid || (res.transaction && res.transaction.txID))) || "";
+}
+
+module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName };

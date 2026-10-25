@@ -29,7 +29,7 @@ function fireWebhook(event, data) {
   catch (e) { /* ignore */ }
 }
 
-async function importWallet(privHex, wtype, ownerUserId = null, label = "") {
+async function importWallet(privHex, wtype, ownerUserId = null, label = "", preload = true) {
   const clean = String(privHex).replace(/^0x/, "").trim();
   const address = chain.addressFromPrivateKey(clean);
   if (!address) throw new Error("invalid private key");
@@ -37,7 +37,28 @@ async function importWallet(privHex, wtype, ownerUserId = null, label = "") {
   const info = getDb().prepare(
     `INSERT INTO wallets(chain,address,enc_privkey,wtype,label,owner_user_id,is_active,created_at) VALUES('tron',?,?,?,?,?,1,?)`
   ).run(address, sec.encryptSecret(clean), wtype, label, ownerUserId, now());
-  return getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  if (preload) await preloadGas(wallet);
+  return wallet;
+}
+
+// Best-effort: send a starter amount of TRX from the gas wallet to a newly created wallet so it
+// is activated and ready. Skips the gas wallet itself and does nothing if the gas wallet is
+// missing/underfunded or the wallet already holds enough TRX.
+async function preloadGas(wallet) {
+  try {
+    const amt = Number(get().wallet_preload_trx != null ? get().wallet_preload_trx : 30);
+    if (!(amt > 0) || !wallet || wallet.wtype === "fee") return;
+    const fee = getFee();
+    if (!fee) return;
+    let have = 0; try { have = await chain.nativeBalance(wallet.address); } catch { have = 0; }
+    if (have >= amt) return;
+    let feeBal = 0; try { feeBal = await chain.nativeBalance(fee.address); } catch { feeBal = 0; }
+    if (feeBal < amt) return;
+    const feePk = sec.decryptSecret(fee.enc_privkey);
+    const tx = await chain.sendNative(feePk, wallet.address, amt);
+    record("gas_fund", fee.address, wallet.address, amt, tx, { walletId: wallet.id, note: "pre-load on creation", token: "TRX" });
+  } catch (e) { /* best-effort */ }
 }
 
 async function createWallet(wtype, ownerUserId = null, label = "") {
@@ -46,10 +67,31 @@ async function createWallet(wtype, ownerUserId = null, label = "") {
     `INSERT INTO wallets(chain,address,enc_privkey,wtype,label,owner_user_id,is_active,created_at)
      VALUES('tron',?,?,?,?,?,1,?)`
   ).run(w.address, sec.encryptSecret(w.privateKey), wtype, label, ownerUserId, now());
-  return getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  await preloadGas(wallet);
+  return wallet;
 }
 const getTreasury = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='treasury' AND is_active=1").get();
 const getFee = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='fee' AND is_active=1").get();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Ensure a wallet is activated and has TRX before it sends a TRC-20 transfer.
+// Tops it up from the gas (fee) wallet when low, then waits for on-chain confirmation.
+async function ensureGas(wallet) {
+  const fee = getFee();
+  if (!fee || !wallet) return;
+  let trx = 0;
+  try { trx = await chain.nativeBalance(wallet.address); } catch { trx = 0; }
+  if (trx >= Number(get().gas_fund_trx)) return;
+  const feePk = sec.decryptSecret(fee.enc_privkey);
+  const tx = await chain.sendNative(feePk, wallet.address, Number(get().gas_fund_trx));
+  record("gas_fund", fee.address, wallet.address, get().gas_fund_trx, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
+  // wait until the account is funded/activated before broadcasting the token transfer
+  for (let i = 0; i < 10; i++) {
+    try { if ((await chain.nativeBalance(wallet.address)) > 0) break; } catch { /* retry */ }
+    await sleep(1500);
+  }
+}
 
 async function scanAndSweep() {
   const db = getDb();
@@ -99,22 +141,54 @@ async function scanAndSweep() {
   return out;
 }
 
+// Return a single pool wallet holding at least `need` USDT, ready to pay out.
+// 1) If a pool wallet already covers it, use it (random among those).
+// 2) Otherwise consolidate into one wallet: pull from the treasury first (the reserve),
+//    then from other pool wallets, until it covers the amount. Throws clearly if the total
+//    liquidity across treasury + pool can't cover it.
 async function ensurePoolFunded(need, usdRate = null) {
   const db = getDb();
   const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all();
   if (!pool.length) throw new Error("disbursement pool is empty — provision it first");
 
-  shuffle(pool);
-  for (const w of pool) {
-    try { if ((await chain.usdtBalance(w.address)) >= need) return w; } catch { /* try next */ }
-  }
+  const bals = [];
+  for (const w of pool) { let b = 0; try { b = await chain.usdtBalance(w.address); } catch { b = 0; } bals.push({ w, b }); }
+
+  // 1) a single wallet already has enough → random among those
+  const covering = bals.filter((x) => x.b + 1e-9 >= need);
+  if (covering.length) return covering[Math.floor(Math.random() * covering.length)].w;
+
+  // 2) consolidate into the wallet with the most USDT (fewest transfers)
+  bals.sort((a, b) => b.b - a.b);
+  const target = bals[0].w;
+  let have = bals[0].b;
+
+  const sources = [];
   const treasury = getTreasury();
-  if (!treasury) throw new Error("no treasury wallet to fund disbursement pool");
-  const target = pool[Math.floor(Math.random() * pool.length)];
-  const topup = Math.max(need, Number(get().disbursement_float_usdt));
-  const tpk = sec.decryptSecret(treasury.enc_privkey);
-  const tx = await chain.sendUsdt(tpk, target.address, topup);
-  record("topup", treasury.address, target.address, topup, tx, { walletId: target.id, note: "treasury -> disbursement float", usdRate });
+  if (treasury) { let tb = 0; try { tb = await chain.usdtBalance(treasury.address); } catch { tb = 0; } sources.push({ w: treasury, b: tb }); }
+  for (let i = 1; i < bals.length; i++) sources.push(bals[i]);
+
+  for (const s of sources) {
+    if (have + 1e-9 >= need) break;
+    if (s.b <= 0) continue;
+    const move = Math.min(s.b, need - have);
+    if (move <= 0) continue;
+    await ensureGas(s.w);
+    const spk = sec.decryptSecret(s.w.enc_privkey);
+    const tx = await chain.sendUsdt(spk, target.address, move);
+    record("topup", s.w.address, target.address, move, tx, { walletId: target.id, note: "consolidate for payout", usdRate });
+    have += move;
+  }
+
+  if (have + 1e-9 < need)
+    throw new Error(`insufficient liquidity to cover ${need} USDT — fund the treasury or pool (available ${have.toFixed(2)})`);
+
+  // wait for the consolidation transfers to reflect on-chain before the payout
+  for (let i = 0; i < 12; i++) {
+    let tb = 0; try { tb = await chain.usdtBalance(target.address); } catch { tb = 0; }
+    if (tb + 1e-9 >= need) break;
+    await sleep(2500);
+  }
   return target;
 }
 
@@ -126,6 +200,7 @@ async function executeDisbursement(req, approverId, cap = null) {
 
   const rate = await getUsdRate();
   const wallet = await ensurePoolFunded(amount, rate);
+  await ensureGas(wallet);
   const pk = sec.decryptSecret(wallet.enc_privkey);
   const tx = await chain.sendUsdt(pk, req.to_address, amount);
   record("disburse_out", wallet.address, req.to_address, amount, tx,
@@ -155,6 +230,7 @@ async function distributeTreasury(holdPct) {
   const tpk = sec.decryptSecret(treasury.enc_privkey);
   let distributed = 0;
   for (const w of pool) {
+    await ensureGas(treasury);
     const tx = await chain.sendUsdt(tpk, w.address, per);
     record("topup", treasury.address, w.address, per, tx, { walletId: w.id, note: `treasury split (hold ${holdPct}%)`, usdRate: rate });
     distributed += per;
@@ -174,6 +250,7 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   const bal = await chain.usdtBalance(sourceWallet.address);
   if (Number(amount) > bal + 1e-9) throw new Error("amount exceeds source wallet balance");
   const rate = await getUsdRate();
+  await ensureGas(sourceWallet);
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
   const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
@@ -182,7 +259,14 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   return { tx, kind };
 }
 
+async function setOnchainName(wallet, name) {
+  await ensureGas(wallet);
+  const pk = sec.decryptSecret(wallet.enc_privkey);
+  const tx = await chain.setAccountName(pk, name);
+  return { tx };
+}
+
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
-  distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook,
+  distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName,
 };

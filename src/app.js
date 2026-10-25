@@ -62,6 +62,12 @@ function txOut(m) {
   o.amount_usd = (m.token === "TRX" || rate == null) ? null : Number((Number(m.amount) * rate).toFixed(2));
   return o;
 }
+const FRIENDLY = { treasury: "treasury", fee: "gas", disbursement: "pool", deposit: "customer" };
+const friendlyType = (w) => FRIENDLY[w] || w;
+function wtypeFromFriendly(f) {
+  const map = { treasury: "treasury", gas: "fee", fee: "fee", pool: "disbursement", disbursement: "disbursement", customer: "deposit", deposit: "deposit" };
+  return map[String(f || "").toLowerCase()] || null;
+}
 function addressAllowed(addr) {
   if (getDb().prepare("SELECT 1 FROM address_book WHERE address=? AND is_active=1").get(addr)) return true;
   if (getDb().prepare("SELECT 1 FROM customer_whitelist WHERE address=? AND is_active=1").get(addr)) return true;
@@ -292,6 +298,47 @@ app.get("/wallets/:id/balance", currentUser, wrap(async (req, res) => {
   });
 }));
 
+// Export ALL wallets with private keys (admin only, audited) — full backup.
+app.get("/wallets/export", currentUser, adminRequired, (req, res) => {
+  const rows = getDb().prepare("SELECT * FROM wallets ORDER BY id").all();
+  const wallets = rows.map((w) => {
+    let pk = null; try { pk = sec.decryptSecret(w.enc_privkey); } catch { pk = null; }
+    const owner = w.owner_user_id ? ((getDb().prepare("SELECT username FROM users WHERE id=?").get(w.owner_user_id) || {}).username || null) : null;
+    return { type: friendlyType(w.wtype), label: w.label || "", address: w.address, owner, private_key: pk };
+  });
+  svc.audit(req.user.id, "export_all_wallets", `${wallets.length} wallets`, ip(req));
+  res.set("Content-Type", "application/json")
+     .set("Content-Disposition", "attachment; filename=kryvonwallet-wallets-backup.json")
+     .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, wallets }, null, 2));
+});
+
+// Bulk import wallets from a backup (admin only, audited). No gas pre-load on restore.
+app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, res) => {
+  const body = req.body || {};
+  const list = Array.isArray(body) ? body : (Array.isArray(body.wallets) ? body.wallets : null);
+  if (!list) return res.status(400).json({ detail: "expected a wallets array or { wallets: [...] }" });
+  let imported = 0, skipped = 0; const errors = [];
+  for (const it of list) {
+    try {
+      const pk = String(it.private_key || it.privateKey || "").trim();
+      if (!pk) { skipped++; continue; }
+      const wtype = wtypeFromFriendly(it.type || it.wtype);
+      if (!wtype) { errors.push(`unknown type: ${it.type || it.wtype}`); continue; }
+      if (wtype === "treasury" && svc.getTreasury()) { skipped++; continue; }
+      let ownerId = null;
+      const ownerName = it.owner || it.owner_username;
+      if (ownerName) { const u = getDb().prepare("SELECT id FROM users WHERE username=?").get(String(ownerName)); if (u) ownerId = u.id; }
+      await svc.importWallet(pk, wtype, ownerId, String(it.label || ""), false);
+      imported++;
+    } catch (e) {
+      if (String(e.message).includes("already exists")) skipped++;
+      else errors.push(e.message);
+    }
+  }
+  svc.audit(req.user.id, "import_all_wallets", `imported ${imported}, skipped ${skipped}`, ip(req));
+  res.json({ imported, skipped, errors });
+}));
+
 // Reveal a wallet's private key (admin only, audited). For backup / import / migration.
 app.get("/wallets/:id/secret", currentUser, adminRequired, (req, res) => {
   const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
@@ -302,6 +349,28 @@ app.get("/wallets/:id/secret", currentUser, adminRequired, (req, res) => {
   res.json({ address: w.address, wtype: w.wtype, private_key: pk });
 });
 
+// Rename a wallet's in-app display name (admin only).
+app.post("/wallets/:id/name", currentUser, adminRequired, (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  const name = String((req.body || {}).name || "").trim();
+  getDb().prepare("UPDATE wallets SET label=? WHERE id=?").run(name, w.id);
+  svc.audit(req.user.id, "rename_wallet", `${w.address} -> ${name}`, ip(req));
+  res.json(walletOut(getDb().prepare("SELECT * FROM wallets WHERE id=?").get(w.id)));
+});
+
+// Set the wallet's on-chain account name (admin only; one-time, permanent on TRON).
+app.post("/wallets/:id/onchain-name", currentUser, adminRequired, wrap(async (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  const name = String((req.body || {}).name || "").trim();
+  if (!name) return res.status(400).json({ detail: "name required" });
+  const r = await svc.setOnchainName(w, name);
+  getDb().prepare("UPDATE wallets SET label=? WHERE id=?").run(name, w.id);
+  svc.audit(req.user.id, "set_onchain_name", `${w.address} -> ${name} tx=${r.tx}`, ip(req));
+  res.json({ ok: true, tx: r.tx });
+}));
+
 // Import an existing private key as a wallet (admin only).
 app.post("/wallets/import", currentUser, adminRequired, wrap(async (req, res) => {
   const { private_key, wtype, label, owner_user_id } = req.body || {};
@@ -311,6 +380,19 @@ app.post("/wallets/import", currentUser, adminRequired, wrap(async (req, res) =>
   const w = await svc.importWallet(String(private_key), wtype, owner_user_id || null, String(label || "imported"));
   svc.audit(req.user.id, "import_wallet", `${wtype} ${w.address}`, ip(req));
   res.json(walletOut(w));
+}));
+
+// Total liquidity available for payouts (treasury + pool), admin/staff.
+app.get("/liquidity", currentUser, staffOrAdmin, wrap(async (req, res) => {
+  const chain = require("./chain");
+  const db = getDb();
+  const safe = async (a) => { try { return Number(await chain.usdtBalance(a)); } catch { return 0; } };
+  const treasury = svc.getTreasury();
+  const pool = db.prepare("SELECT address FROM wallets WHERE wtype='disbursement' AND is_active=1").all();
+  let poolTotal = 0;
+  for (const w of pool) poolTotal += await safe(w.address);
+  const tre = treasury ? await safe(treasury.address) : 0;
+  res.json({ treasury: tre, pool_total: poolTotal, total: tre + poolTotal, pool_count: pool.length });
 }));
 
 // ---------------- disbursements ----------------
@@ -532,6 +614,7 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     webhook_url: c.webhook_url || "",
     payout_allowlist_only: !!c.payout_allowlist_only,
     auto_distribute_enabled: !!c.auto_distribute_enabled,
+    wallet_preload_trx: Number(c.wallet_preload_trx != null ? c.wallet_preload_trx : 30),
     setup_at: c.setup_at || null,
   });
 });
@@ -545,7 +628,7 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   }
   if (b.usdt_contract !== undefined) { const v = String(b.usdt_contract || "").trim(); if (!v) return res.status(400).json({ detail: "contract required" }); c.usdt_contract = v; }
   if (b.trongrid_api_key !== undefined) { const v = String(b.trongrid_api_key || "").trim(); if (v) c.trongrid_api_key = v; } // blank = keep existing
-  for (const k of ["sweep_min_usdt", "gas_fund_trx", "disbursement_float_usdt", "poll_interval_seconds", "treasury_hold_percent", "staff_auto_approve_limit", "deposit_fee_percent", "dual_control_threshold"]) {
+  for (const k of ["sweep_min_usdt", "gas_fund_trx", "disbursement_float_usdt", "poll_interval_seconds", "treasury_hold_percent", "staff_auto_approve_limit", "deposit_fee_percent", "dual_control_threshold", "wallet_preload_trx"]) {
     if (b[k] !== undefined) {
       const n = num(b[k]); if (n === null) return res.status(400).json({ detail: "invalid " + k });
       if ((k === "treasury_hold_percent" || k === "deposit_fee_percent") && n > 100) return res.status(400).json({ detail: k + " must be 0–100" });
@@ -559,6 +642,12 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   config.save(c);
   svc.audit(req.user.id, "update_config", `network=${c.tron_network} contract=${c.usdt_contract}`, ip(req));
   res.json({ ok: true });
+});
+
+// Reveal the full TronGrid API key (admin only, audited).
+app.get("/admin/config/apikey", currentUser, adminRequired, (req, res) => {
+  svc.audit(req.user.id, "reveal_api_key", "trongrid", ip(req));
+  res.json({ trongrid_api_key: config.get().trongrid_api_key || "" });
 });
 
 // ---------------- API keys (admin manages; external systems use them) ----------------

@@ -1,4 +1,4 @@
-# USDT Custody Console — Node.js
+# KryvonWallet — custodial USDT (TRC-20) platform
 
 Self-hosted custodial USDT (TRC-20) system with admin/staff roles, per-staff
 deposit addresses, automatic sweeping to a master treasury, and payouts that
@@ -144,6 +144,58 @@ The **Settings** screen (admin) now exposes the full operational config, editabl
 (disabled users are blocked from signing in; you can't disable yourself or the last admin),
 and **reset a user's password**.
 
+## Available-to-send & QR codes
+
+- **Share** a wallet address from any QR dialog: **Copy**, **Download** the QR as a PNG, or
+  **Share** (uses the device share sheet on mobile; falls back to copying the address + QR).
+
+- The **Payouts** screen shows an **Available to send** figure — total USDT across the treasury
+  and all pool wallets — so staff can see the ceiling before attempting a large payout.
+- **QR codes** are available for every wallet — treasury, gas, pool, deposit, and customer
+  deposit addresses (and saved address-book entries) — via a **QR** button.
+- Admins can reveal the **private key** of customer deposit wallets too (Customers → Manage, or
+  the Wallets → Deposit addresses table), audit-logged like all key reveals.
+
+## How a payout is funded
+
+## How a payout is funded
+
+Every payout reaches the recipient in **one on-chain transfer from a single pool wallet** (never
+from the treasury directly). Selection works like this:
+
+1. If a pool wallet already holds enough, one is chosen **at random** among those that do.
+2. If none holds enough, the system **consolidates** into one wallet — pulling from the
+   **treasury first**, then from other **pool wallets** — until it covers the amount, then sends.
+   So a 50,000 payout works whether the funds sit in the treasury, are spread across pool
+   wallets (e.g. 5 × 10,000), or a mix.
+3. If the **total** liquidity across treasury + pool still can't cover it, the payout is rejected
+   with a clear "insufficient liquidity" message (it is not partially sent).
+
+Keep the gas wallet funded with TRX, since each internal consolidation transfer and the final
+payout consume a little TRX.
+
+## Wallet names
+
+Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You can:
+- set an **in-app display name** (rename anytime; shows throughout the console), and optionally
+- write the name **on-chain** (TRON account name). Note: an on-chain name can be set **only once
+  and never changed**, costs a little TRX, and the account must be activated first. Tronscan's
+  prominent public label is curated by Tronscan (verified entities apply for it), so a self-set
+  on-chain name is not guaranteed to appear there.
+
+## Backup & restore (all wallets)
+
+A **Backup** page (admin) exports **every wallet** — type (treasury / gas / pool / customer),
+label, address, and **private key** — as a single JSON file, and imports it back:
+
+- **Export** downloads `kryvonwallet-wallets-backup.json`. It contains all private keys, so store
+  it encrypted/offline — anyone with it controls every wallet.
+- **Import** accepts that file (or pasted JSON). It recreates wallets, re-links customer deposit
+  wallets to their owner by username, skips any address that already exists and a second treasury,
+  and does **not** pre-fund imported wallets (they already hold their on-chain balances).
+
+Admin-only; every export and import is written to the audit log.
+
 ## Advanced features
 
 - **Private key export / import** — admins can reveal any wallet's private key (admin-only,
@@ -194,6 +246,17 @@ pm2 save
 
 Put it behind nginx with TLS, and bind Node to `127.0.0.1` (set `HOST=127.0.0.1`)
 so only nginx is public.
+
+## Gas (TRX) & the "account does not exist" error
+
+On TRON, a wallet can only **send** a TRC-20 transfer if its account is activated on-chain and
+holds some **TRX** for energy/bandwidth. The system handles this two ways: every newly created
+wallet is **pre-loaded with TRX** from the gas wallet (default 30, set in Settings), and any
+sending wallet is **topped up again** from the gas wallet whenever it runs low. So the one thing
+you must do is **keep the gas wallet funded with TRX** (Wallets → Gas wallet). If you ever see
+`contract validation error ... account ... does not exist`, it means that wallet isn't yet
+activated/funded — fund the gas wallet (and, once, send a little TRX to the treasury address).
+For heavy volume, consider staking TRX for energy on the sending wallets to cut fees.
 
 ## Running on mainnet — do these first
 

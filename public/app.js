@@ -100,7 +100,7 @@ const NAV = {
   admin: [
     ["dashboard","Dashboard","◧"], ["wallets","Wallets","▦"], ["payouts","Payouts","↗"],
     ["reports","Reports","▚"], ["transactions","Transactions","≋"], ["customers","Customers","☺"], ["addressbook","Address book","▤"],
-    ["staff","Staff","☷"], ["settings","Settings","⚙"], ["apikeys","API keys","⚿"], ["audit","Audit log","❏"]
+    ["staff","Staff","☷"], ["settings","Settings","⚙"], ["apikeys","API keys","⚿"], ["backup","Backup","⤓"], ["audit","Audit log","❏"]
   ],
   staff: [
     ["dashboard","Dashboard","◧"], ["wallets","Receive","▦"], ["payouts","Payouts","↗"],
@@ -131,7 +131,7 @@ function route(sec){
     : { dashboard:renderDashboard, wallets:renderWallets, payouts:renderPayouts,
         staff:renderStaff, audit:renderAudit, customers:renderCustomers,
         addressbook:renderAddressBook, settings:renderSettings, transactions:renderTransactions,
-        apikeys:renderApiKeys, reports:renderReports };
+        apikeys:renderApiKeys, reports:renderReports, backup:renderBackup };
   const fn = map[sec];
   if (fn) fn();
 }
@@ -244,6 +244,8 @@ async function renderWallets(){
         ? `<div class="recv-addr">${esc(treasury.address)}</div>
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${treasury.id}">Check balance</button>
            <button class="btn btn-ghost btn-sm" data-secret="${treasury.id}">Key</button>
+           <button class="btn btn-ghost btn-sm" data-wname="${treasury.id}" data-wlabel="${esc(treasury.label||'')}">Name</button>
+           <button class="btn btn-ghost btn-sm" data-qr="${esc(treasury.address)}" data-qrlabel="${esc(treasury.label||'treasury')}">QR</button>
            <span class="hint" id="bal-${treasury.id}"></span></div>`
         : `<span class="hint">Deposits are swept here automatically. Keep the bulk of funds in cold storage.</span>`}
       </div></div>
@@ -273,6 +275,8 @@ async function renderWallets(){
            <div class="hint">Fund this address with TRX so the system can pay sweep fees.</div>
            <div class="form-actions"><button class="btn btn-ghost btn-sm bal" data-id="${fee.id}">Check balance</button>
            <button class="btn btn-ghost btn-sm" data-secret="${fee.id}">Key</button>
+           <button class="btn btn-ghost btn-sm" data-wname="${fee.id}" data-wlabel="${esc(fee.label||'')}">Name</button>
+           <button class="btn btn-ghost btn-sm" data-qr="${esc(fee.address)}" data-qrlabel="${esc(fee.label||'gas wallet')}">QR</button>
            <span class="hint" id="bal-${fee.id}"></span></div>`
         : `<span class="hint">Needed to pay the network fee when sweeping TRC-20 deposits.</span>`}
       </div></div>
@@ -285,7 +289,7 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Label</th><th>Address</th><th class="amt">USDT</th><th></th></tr></thead><tbody>
            ${pool.map(w => `<tr><td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
              <td class="amt num" id="pbal-${w.id}">—</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button></td></tr>`).join("")}
+             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button></td></tr>`).join("")}
            </tbody></table>`
         : emptyState("No pool wallets yet. Payouts draw from these, topped up from treasury.")}
       </div></div>
@@ -307,7 +311,7 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th><th></th></tr></thead><tbody>
            ${deposits.map(w => `<tr><td>${esc(uname(w.owner_user_id))}</td>
              <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button></td></tr>`).join("")}</tbody></table>`
+             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button></td></tr>`).join("")}</tbody></table>`
         : emptyState("No deposit addresses yet.")}
       </div></div>
 
@@ -395,7 +399,7 @@ async function renderReceive(sec){
           <div style="flex:1;min-width:220px">
             <div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
             <div class="recv-addr">${esc(w.address)}</div>
-            <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button></div>
+            <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}">Share</button></div>
           </div></div></div></div>`).join("");
     wallets.forEach(w => { new QRCode($("#qr-"+w.id), { text:w.address, width:132, height:132,
       correctLevel: QRCode.CorrectLevel.M }); });
@@ -412,10 +416,14 @@ async function renderPayouts(){
     <div id="pBody">Loading…</div>`;
   try{
     const canPay = state.user.role === "staff" || state.user.role === "admin";
-    const [reqs, settings, book] = await Promise.all([
-      api("/disbursements"), api("/settings").catch(() => ({})), api("/address-book").catch(() => [])
+    const [reqs, settings, book, liq] = await Promise.all([
+      api("/disbursements"), api("/settings").catch(() => ({})), api("/address-book").catch(() => []), api("/liquidity").catch(() => null)
     ]);
-    $("#pBody").innerHTML = (canPay ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
+    const liqCard = liq ? `<div class="readouts" style="margin-bottom:18px"><div class="readout">
+      <div class="label">Available to send (treasury + pool)</div>
+      <div class="value lead num">${fmtUsdt(liq.total)}<span class="unit">USDT</span></div>
+      <div class="foot">treasury ${fmtUsdt(liq.treasury)} · pool ${fmtUsdt(liq.pool_total)} across ${liq.pool_count} wallet${liq.pool_count === 1 ? "" : "s"}</div></div></div>` : "";
+    $("#pBody").innerHTML = liqCard + (canPay ? staffRequestForm(settings, book) : "") + payoutTable(reqs);
     if (canPay) $("#pSubmit").onclick = submitRequest;
     if (state.user.role === "admin")
       document.querySelectorAll(".approve").forEach(b => b.onclick = () => approve(b.dataset));
@@ -594,7 +602,7 @@ function ensureReceiptModal(){
   d.id = "rcptBack"; d.className = "modal-back";
   d.innerHTML = `<div class="modal receipt" id="rcptCard">
     <div class="receipt-head">
-      <div class="receipt-brand"><span class="rb-mark">₮</span> USDT Custody — Receipt</div>
+      <div class="receipt-brand"><span class="rb-mark">K</span> KryvonWallet — Receipt</div>
       <div class="receipt-id mono" id="rcptId"></div>
     </div>
     <div class="receipt-body" id="rcptBody"></div>
@@ -641,6 +649,8 @@ async function openReceipt(key){
 }
 
 document.addEventListener("click", (e) => {
+  const wn = e.target.closest("[data-wname]");
+  if (wn){ openWalletName(wn.dataset.wname, wn.dataset.wlabel || ""); return; }
   const sk = e.target.closest("[data-secret]");
   if (sk){ showSecret(sk.dataset.secret); return; }
   const ut = e.target.closest("[data-usertx]");
@@ -712,8 +722,13 @@ async function openCustomer(id){
     const c = await api("/customers/" + id);
     if (c.customer_type === "depositor"){
       d.innerHTML = `<div class="panel"><div class="panel-head"><h2>${esc(c.username)} · depositor</h2></div><div class="panel-body">
-        ${c.deposit_addresses.map(w => `<div class="recv-addr">${esc(w.address)}</div>`).join("") || emptyState("No deposit address.")}
-        <div class="hint" style="margin-top:8px">Deposits here settle to treasury automatically; the customer sees them in their portal.</div></div></div>`;
+        ${c.deposit_addresses.map(w => `<div style="margin-bottom:14px"><div class="recv-addr">${esc(w.address)}</div>
+          <div class="form-actions" style="margin-top:6px">
+            <button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy</button>
+            <button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label || c.username)}">QR</button>
+            <button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button>
+          </div></div>`).join("") || emptyState("No deposit address.")}
+        <div class="hint">Deposits here settle to treasury automatically; the customer sees them in their portal.</div></div></div>`;
       return;
     }
     const wl = c.whitelist.map(w => `<tr><td>${addrHtml(w.address)}</td><td>${esc(w.label||"—")}</td>
@@ -774,7 +789,7 @@ async function renderCustomerAssets(){
           <div class="panel-body"><div class="qr-wrap"><div class="qr-box" id="cqr-${w.id}"></div>
           <div style="flex:1;min-width:220px"><div class="hint" style="margin-bottom:6px">TRC-20 USDT only</div>
           <div class="recv-addr">${esc(w.address)}</div>
-          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
+          <div class="form-actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy address</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'KryvonWallet')}">Share</button></div></div></div></div></div>`).join("") || emptyState("No deposit address assigned yet.")}`;
       me.deposit_addresses.forEach(w => { try { new QRCode($("#cqr-" + w.id), { text:w.address, width:132, height:132, correctLevel: QRCode.CorrectLevel.M }); } catch(e){} });
     } else {
       sec.innerHTML = `<div class="page-head"><h1>Your whitelisted addresses</h1><p>Payouts can only be sent to these approved addresses. Contact support to change them.</p></div>
@@ -885,6 +900,53 @@ async function renderReports(){
       <div class="panel"><div class="panel-head"><h2>Payout volume by user</h2></div><div class="panel-body flush">
         ${r.by_staff.length ? `<table><thead><tr><th>User</th><th class="amt">Paid out (USDT)</th><th class="amt">Payouts</th></tr></thead><tbody>${r.by_staff.map(s => `<tr><td>${esc(s.username)}</td><td class="amt num">${fmtUsdt(s.v)}</td><td class="amt num">${s.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No payouts yet.")}</div></div>`;
   }catch(e){ sec.querySelector("#repBody").innerHTML = emptyState(e.message); }
+}
+
+/* ---------- wallet naming ---------- */
+async function openWalletName(id, label){
+  const ok = await confirmModal({ title:"Wallet name", okLabel:"Save",
+    bodyHtml:`<div class="field"><label>Display name (shown in this app)</label><input id="wnName" class="input" value="${esc(label || "")}"></div>
+      <label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="wnChain"> Also write this name on-chain (permanent, one-time, costs a little TRX)</label>
+      <div class="hint" style="margin-top:8px">On-chain names can be set only once and can't be changed. Tronscan's public label is curated by Tronscan, so a self-set name may not appear there.</div>` });
+  if (!ok) return;
+  const name = ((document.getElementById("wnName") || {}).value || "").trim();
+  const onChain = (document.getElementById("wnChain") || {}).checked;
+  try{
+    await api("/wallets/" + id + "/name", {method:"POST", body:{ name }});
+    if (onChain && name) { await api("/wallets/" + id + "/onchain-name", {method:"POST", body:{ name }}); toast("Name saved + written on-chain"); }
+    else toast("Name saved");
+    renderWallets();
+  }catch(e){ toast(e.message, true); }
+}
+
+/* ---------- backup & restore (admin) ---------- */
+async function renderBackup(){
+  const sec = $("#sec-backup");
+  sec.innerHTML = `<div class="page-head"><h1>Backup &amp; restore</h1><p>Export or import every wallet — address, label, type, and private key.</p></div>
+    <div class="panel"><div class="panel-head"><h2>Export all wallets</h2></div><div class="panel-body">
+      <div class="live-note">The export file contains <b>private keys for every wallet</b> (treasury, gas, pool, and customer). Anyone who has it controls all funds — store it encrypted and offline.</div>
+      <div class="form-actions" style="margin-top:12px"><button class="btn btn-primary" id="bkExport">Download wallet backup (.json)</button></div>
+    </div></div>
+    <div class="panel"><div class="panel-head"><h2>Import wallets</h2></div><div class="panel-body">
+      <div class="field"><label>Backup file (.json)</label><input type="file" id="bkFile" accept="application/json,.json" class="input"></div>
+      <div class="field"><label>…or paste backup JSON</label><textarea id="bkPaste" class="input" rows="6" placeholder='{"wallets":[{"type":"pool","label":"...","address":"...","private_key":"..."}]}'></textarea></div>
+      <button class="btn btn-primary" id="bkImport">Import wallets</button>
+      <div id="bkResult" class="hint" style="margin-top:10px"></div>
+      <div class="hint">Wallets that already exist (same address) and a second treasury are skipped. Imported wallets aren't pre-funded — they already hold their on-chain balances.</div>
+    </div></div>`;
+  $("#bkExport").onclick = () => downloadCsv("/wallets/export", "kryvonwallet-wallets-backup.json");
+  $("#bkImport").onclick = async () => {
+    let text = $("#bkPaste").value.trim();
+    const f = $("#bkFile").files && $("#bkFile").files[0];
+    if (!text && f) { try { text = await f.text(); } catch (e) { return toast("Could not read file", true); } }
+    if (!text) return toast("Choose a file or paste JSON", true);
+    let data; try { data = JSON.parse(text); } catch (e) { return toast("Invalid JSON", true); }
+    try {
+      const r = await api("/wallets/import-bulk", { method: "POST", body: data });
+      $("#bkResult").textContent = `Imported ${r.imported}, skipped ${r.skipped}${r.errors && r.errors.length ? `, errors: ${r.errors.length}` : ""}.`;
+      toast("Import complete");
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 /* ---------- API keys (admin) ---------- */
@@ -1023,6 +1085,7 @@ async function renderSettings(){
           <option value="shasta"${c.tron_network==="shasta"?" selected":""}>Shasta testnet</option></select></div>
         <div class="field"><label>TronGrid API key</label>
           <input id="cfgKey" class="input mono" placeholder="${c.has_trongrid_key?esc(c.trongrid_api_key_masked)+'  (leave blank to keep)':'required for mainnet'}">
+          <div class="form-actions" style="margin-top:6px">${c.has_trongrid_key?`<button type="button" class="btn btn-ghost btn-sm" id="cfgKeyReveal">Reveal current key</button>`:""}</div>
           <div class="hint">Leave blank to keep the current key.</div></div>
       </div>
       <div class="field"><label>USDT contract (TRC-20)</label><input id="cfgContract" class="input mono" value="${esc(c.usdt_contract)}"></div>
@@ -1035,6 +1098,8 @@ async function renderSettings(){
         <div class="field"><label>Deposit scan interval (seconds)</label><input id="cfgPoll" class="input" type="number" step="1" min="5" value="${esc(c.poll_interval_seconds)}">
           <div class="hint">Takes effect on next restart.</div></div>
       </div>
+      <div class="field"><label>Pre-load new wallets with (TRX)</label><input id="cfgPreload" class="input" type="number" step="1" min="0" value="${esc(c.wallet_preload_trx)}">
+        <div class="hint">Sent from the gas wallet to each newly created wallet so it's activated and ready. 0 = off.</div></div>
     </div></div>
 
     <div class="panel"><div class="panel-head"><h2>Controls &amp; integrations</h2></div><div class="panel-body">
@@ -1066,6 +1131,7 @@ async function renderSettings(){
         gas_fund_trx: parseFloat($("#cfgGas").value) || 0,
         disbursement_float_usdt: parseFloat($("#cfgFloat").value) || 0,
         poll_interval_seconds: parseInt($("#cfgPoll").value, 10) || 30,
+        wallet_preload_trx: parseFloat($("#cfgPreload").value) || 0,
         dual_control_threshold: parseFloat($("#cfgDual").value) || 0,
         webhook_url: $("#cfgHook").value.trim(),
         payout_allowlist_only: $("#cfgAllow").checked,
@@ -1074,26 +1140,67 @@ async function renderSettings(){
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
       act(() => api("/admin/config", {method:"POST", body}), "Settings saved", renderSettings);
     };
+    const rv = $("#cfgKeyReveal");
+    if (rv) rv.onclick = async () => {
+      try { const r = await api("/admin/config/apikey"); $("#cfgKey").value = r.trongrid_api_key || ""; toast("Key shown in the field"); }
+      catch (e) { toast(e.message, true); }
+    };
   }catch(e){ $("#stBody").innerHTML = emptyState(e.message); }
 }
 
 /* ---------- QR modal ---------- */
+let _qrCur = { address: "", label: "" };
 function ensureQrModal(){
   if ($("#qrBack")) return;
   const d = document.createElement("div");
   d.id = "qrBack"; d.className = "modal-back";
-  d.innerHTML = `<div class="modal" style="max-width:300px">
-    <div class="modal-head"><h3 id="qrTitle">Address</h3></div>
-    <div class="modal-body" style="text-align:center"><div id="qrBox" class="qr-box" style="display:inline-block"></div>
-      <div class="recv-addr" id="qrAddr" style="margin-top:12px"></div></div>
+  d.innerHTML = `<div class="modal" style="max-width:320px">
+    <div class="modal-head"><h3 id="qrTitle">Wallet address</h3></div>
+    <div class="modal-body" style="text-align:center">
+      <div id="qrBox" class="qr-box" style="display:inline-block"></div>
+      <div class="recv-addr" id="qrAddr" style="margin-top:12px;user-select:all"></div>
+      <div class="form-actions" style="justify-content:center;margin-top:12px">
+        <button class="btn btn-ghost btn-sm" id="qrCopy">Copy</button>
+        <button class="btn btn-ghost btn-sm" id="qrDownload">Download</button>
+        <button class="btn btn-accent btn-sm" id="qrShare">Share</button>
+      </div></div>
     <div class="modal-foot"><button class="btn btn-ghost" id="qrClose">Close</button></div></div>`;
   document.body.appendChild(d);
   $("#qrClose").onclick = () => d.classList.remove("show");
   d.addEventListener("click", (e) => { if (e.target === d) d.classList.remove("show"); });
+  $("#qrCopy").onclick = () => navigator.clipboard.writeText(_qrCur.address).then(() => toast("Address copied"));
+  $("#qrDownload").onclick = qrDownload;
+  $("#qrShare").onclick = qrShare;
+}
+function qrDataUrl(){
+  const box = $("#qrBox");
+  const c = box && box.querySelector("canvas");
+  if (c) { try { return c.toDataURL("image/png"); } catch (e) {} }
+  const img = box && box.querySelector("img");
+  return img ? img.src : null;
+}
+function qrDownload(){
+  const url = qrDataUrl(); if (!url) return toast("QR not ready", true);
+  const a = document.createElement("a"); a.href = url; a.download = (_qrCur.label || "KryvonWallet").replace(/\s+/g, "-") + "-qr.png";
+  document.body.appendChild(a); a.click(); a.remove(); toast("QR downloaded");
+}
+async function qrShare(){
+  const text = `${_qrCur.label || "KryvonWallet"} — USDT (TRC-20)\n${_qrCur.address}`;
+  try {
+    const url = qrDataUrl();
+    if (url && navigator.canShare) {
+      const blob = await (await fetch(url)).blob();
+      const file = new File([blob], (_qrCur.label || "KryvonWallet").replace(/\s+/g, "-") + "-qr.png", { type: "image/png" });
+      if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: _qrCur.label || "KryvonWallet", text }); return; }
+    }
+    if (navigator.share) { await navigator.share({ title: _qrCur.label || "KryvonWallet", text }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  navigator.clipboard.writeText(text).then(() => toast("Address copied — ready to share"));
 }
 function showQr(address, label){
   ensureQrModal();
-  $("#qrTitle").textContent = label || "Address";
+  _qrCur = { address, label: label || "KryvonWallet" };
+  $("#qrTitle").textContent = label || "Wallet address";
   $("#qrAddr").textContent = address;
   const box = $("#qrBox"); box.innerHTML = "";
   try { new QRCode(box, { text: address, width: 180, height: 180, correctLevel: QRCode.CorrectLevel.M }); } catch(e){}
