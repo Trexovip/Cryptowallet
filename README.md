@@ -283,6 +283,23 @@ still goes through by burning TRX, so payouts never block.
 > Exact savings and how much to stake/rent depend on your transfer volume and the network's current
 > energy price — **rehearse on Nile testnet** and tune *Delegate per send* before going live.
 
+## Auto gas top-up (swap USDT → TRX)
+
+The gas wallet needs TRX. The platform can keep it funded automatically:
+
+- **New wallets** are auto-funded with **20 TRX** from the gas wallet on creation (configurable as
+  *wallet preload* on the Controls panel).
+- **Gas auto-refill**: when the gas wallet drops **below a threshold** (default 100 TRX), the worker
+  **swaps USDT → TRX** (from treasury, via **SunSwap** on mainnet) and sends the TRX to the gas
+  wallet. Toggle it on/off and set the **threshold** and **USDT amount per refill** (and max
+  slippage) in Settings → **Gas & energy**. There's also a **Top up gas now** button for a manual
+  swap.
+
+Notes: the on-chain swap uses the SunSwap V2 router and WTRX (both addresses configurable). It moves
+real funds — **test on mainnet with a small amount first**, and keep a little TRX/energy on the
+treasury so it can pay for the swap transaction. Auto-refill is **off by default** and has a 5-minute
+cooldown between swaps.
+
 ## Programmatic API & exports
 
 **API keys** (admin → API keys): mint scoped keys (`read`, `deposits`, `payouts`). The key is

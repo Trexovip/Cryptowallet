@@ -47,7 +47,7 @@ async function importWallet(privHex, wtype, ownerUserId = null, label = "", prel
 // missing/underfunded or the wallet already holds enough TRX.
 async function preloadGas(wallet) {
   try {
-    const amt = Number(get().wallet_preload_trx != null ? get().wallet_preload_trx : 30);
+    const amt = Number(get().wallet_preload_trx != null ? get().wallet_preload_trx : 20);
     if (!(amt > 0) || !wallet || wallet.wtype === "fee") return;
     const fee = getFee();
     if (!fee) return;
@@ -329,6 +329,33 @@ async function unstakeEnergy(trx) {
   return { tx: await chain.unfreezeEnergy(pk, trx) };
 }
 
+// Swap USDT (from treasury) to TRX and deliver it to the gas wallet.
+async function swapToGas(usdtAmount) {
+  const fee = getFee(); if (!fee) throw new Error("no gas wallet");
+  const src = getTreasury(); if (!src) throw new Error("no treasury wallet");
+  usdtAmount = Number(usdtAmount);
+  if (!(usdtAmount > 0)) throw new Error("amount must be greater than 0");
+  let bal = 0; try { bal = await chain.usdtBalance(src.address); } catch { bal = 0; }
+  if (bal < usdtAmount) throw new Error("treasury USDT balance is too low for this swap");
+  await ensureGas(src); // treasury needs a little TRX / energy to pay for the swap tx
+  const srcPk = sec.decryptSecret(src.enc_privkey);
+  const r = await chain.swapUsdtToTrx(srcPk, usdtAmount, fee.address, Number(get().swap_slippage_percent || 5));
+  record("gas_swap", src.address, fee.address, r.trxOut || 0, r.tx, { note: `swapped ${usdtAmount} USDT to TRX`, token: "TRX" });
+  return { ...r, usdt_in: usdtAmount };
+}
+let _lastGasSwap = 0;
+async function maybeAutoRefillGas() {
+  if (!get().auto_swap_enabled) return;
+  const fee = getFee(); if (!fee) return;
+  const amt = Number(get().auto_swap_usdt || 0); if (!(amt > 0)) return;
+  let trx = 0; try { trx = await chain.nativeBalance(fee.address); } catch { return; }
+  if (trx >= Number(get().gas_min_trx || 100)) return;
+  if (Date.now() - _lastGasSwap < 5 * 60 * 1000) return; // cooldown, avoid repeated swaps
+  _lastGasSwap = Date.now();
+  try { const r = await swapToGas(amt); console.log("[worker] gas auto-refill:", r.trxOut, "TRX from", amt, "USDT"); }
+  catch (e) { console.log("[worker] gas auto-refill skipped:", e.message); }
+}
+
 async function ownershipProof(wallet, project) {
   const message = `I confirm this address belongs to ${project}.`;
   const pk = sec.decryptSecret(wallet.enc_privkey);
@@ -339,5 +366,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
-  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas,
 };

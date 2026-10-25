@@ -153,6 +153,7 @@ async function renderDashboard(){
     <div id="dashBody">Loading…</div>`;
   try{
     const d = await api("/dashboard");
+    if (d.role === "admin") { try { d.energy = await api("/energy/status"); } catch (e) {} }
     setNetwork(d.network);
     $("#dashBody").innerHTML = d.role === "admin" ? adminDash(d) : staffDash(d);
   }catch(e){ $("#dashBody").innerHTML = emptyState(e.message); }
@@ -163,20 +164,29 @@ function adminDash(d){
   return `
   <div class="readouts">
     <div class="readout">
+      <div class="chip">◈</div>
       <div class="label">Treasury (master) balance</div>
       <div class="value lead num">${treasuryVal}<span class="unit">USDT</span></div>
       <div class="foot">${d.treasury ? addrHtml(d.treasury.address) : "No treasury wallet yet"}</div>
     </div>
     <div class="readout">
+      <div class="chip">▦</div>
       <div class="label">Disbursement pool</div>
       <div class="value num">${fmtUsdt(poolTotal)}<span class="unit">USDT</span></div>
       <div class="foot">${(d.pool||[]).length} wallets · payouts leave from here</div>
     </div>
     <div class="readout">
+      <div class="chip">⛽</div>
       <div class="label">Gas wallet (TRX)</div>
       <div class="value num">${d.fee ? fmtTrx(d.fee.native) : "—"}<span class="unit">TRX</span></div>
       <div class="foot">${d.fee ? "funds sweep fees" : "No gas wallet yet"}</div>
     </div>
+    ${d.energy && d.energy.configured ? `<div class="readout">
+      <div class="chip">⚡</div>
+      <div class="label">Energy available</div>
+      <div class="value num">${Math.floor((d.energy.energyAvailable || 0) / 65000).toLocaleString()}<span class="unit">transfers</span></div>
+      <div class="foot">${(d.energy.mode && d.energy.mode !== "burn") ? `${Number(d.energy.energyAvailable || 0).toLocaleString()} energy` : "burning TRX — stake to cut fees"}</div>
+    </div>` : ""}
   </div>
   <div class="panel"><div class="panel-head"><h2>At a glance</h2></div>
     <div class="panel-body"><div class="stat-row">
@@ -1338,6 +1348,16 @@ async function renderSettings(){
       <div class="field"><label>Rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
       <div class="field"><label>Energy per transfer (rental)</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <div class="hint" style="margin-bottom:8px">Auto top-up the gas wallet by swapping USDT → TRX (SunSwap, mainnet) when it runs low.</div>
+      <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer"><input type="checkbox" id="cfgAutoSwap" ${c.auto_swap_enabled?"checked":""}> Enable auto-swap (USDT → TRX)</label>
+      <div class="form-grid" style="margin-top:12px">
+        <div class="field"><label>Refill when gas below (TRX)</label><input id="cfgGasMin" class="input" type="number" min="0" step="1" value="${Number(c.gas_min_trx!=null?c.gas_min_trx:100)}"></div>
+        <div class="field"><label>USDT to swap per refill</label><input id="cfgSwapUsdt" class="input" type="number" min="0" step="1" value="${Number(c.auto_swap_usdt!=null?c.auto_swap_usdt:50)}"></div>
+      </div>
+      <div class="field"><label>Max slippage (%)</label><input id="cfgSlip" class="input" type="number" min="0" max="50" step="0.5" value="${Number(c.swap_slippage_percent!=null?c.swap_slippage_percent:5)}" style="max-width:160px"></div>
+      <div class="form-actions"><input id="swapNowAmt" class="input" type="number" min="0" step="1" placeholder="USDT" style="max-width:140px"><button class="btn btn-ghost btn-sm" id="swapNow">Top up gas now (swap USDT→TRX)</button></div>
+      <div class="hint" style="margin-top:6px">New wallets are auto-funded with ${esc(c.wallet_preload_trx!=null?c.wallet_preload_trx:20)} TRX from the gas wallet on creation. Swaps pull USDT from treasury.</div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
       <div class="hint" id="enStatus">Loading energy status…</div>
       <div class="form-actions" style="margin-top:10px"><input id="enStakeAmt" class="input" type="number" min="0" step="1" placeholder="TRX" style="max-width:140px"><button class="btn btn-ghost btn-sm" id="enStake">Stake for energy</button><button class="btn btn-ghost btn-sm" id="enUnstake">Unstake</button></div>
       <div class="hint" style="margin-top:6px">Staking freezes TRX on the gas wallet to produce energy (reversible by unstaking; TRON enforces an unstake waiting period). Delegation to the sending wallet happens automatically on each transfer.</div>
@@ -1385,6 +1405,10 @@ async function renderSettings(){
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),
         energy_rental_amount: parseFloat($("#cfgRentAmt").value) || 0,
+        auto_swap_enabled: $("#cfgAutoSwap").checked,
+        gas_min_trx: parseFloat($("#cfgGasMin").value) || 0,
+        auto_swap_usdt: parseFloat($("#cfgSwapUsdt").value) || 0,
+        swap_slippage_percent: parseFloat($("#cfgSlip").value) || 0,
         ..._brandPick,
       };
       const key = $("#cfgKey").value.trim(); if (key) body.trongrid_api_key = key;
@@ -1413,13 +1437,15 @@ async function renderSettings(){
       try {
         const s = await api("/energy/status");
         $("#enStatus").innerHTML = s.configured
-          ? `Mode: <b>${esc(s.mode)}</b> · Energy available: <b>${Number(s.energyAvailable||0).toLocaleString()}</b> · Staked (TronPower): <b>${Number(s.tronPowerLimit||0).toLocaleString()}</b> · Gas wallet TRX: <b>${Number(s.trx||0).toFixed(2)}</b>`
+          ? `Mode: <b>${esc(s.mode)}</b> · Energy available: <b>${Number(s.energyAvailable||0).toLocaleString()}</b> (~${Math.floor(Number(s.energyAvailable||0)/65000)} USDT transfers) · Staked (TronPower): <b>${Number(s.tronPowerLimit||0).toLocaleString()}</b> · Gas wallet TRX: <b>${Number(s.trx||0).toFixed(2)}</b>`
           : "No gas/energy wallet yet — create the gas wallet first.";
       } catch (e) { $("#enStatus").textContent = e.message; }
     }
     loadEnergy();
     $("#enStake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to stake", true); act(() => api("/energy/stake", { method: "POST", body: { trx } }), "Staked for energy", loadEnergy); };
     $("#enUnstake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to unstake", true); act(() => api("/energy/unstake", { method: "POST", body: { trx } }), "Unstake requested", loadEnergy); };
+    const sn = $("#swapNow");
+    if (sn) sn.onclick = () => { const usdt = parseFloat($("#swapNowAmt").value) || parseFloat($("#cfgSwapUsdt").value); if (!(usdt > 0)) return toast("Enter a USDT amount", true); act(() => api("/gas/refill", { method: "POST", body: { usdt } }), "Swapped USDT → TRX to gas", loadEnergy); };
     const rv = $("#cfgKeyReveal");
     if (rv) rv.onclick = async () => {
       try { const r = await api("/admin/config/apikey"); $("#cfgKey").value = r.trongrid_api_key || ""; toast("Key shown in the field"); }

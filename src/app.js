@@ -385,6 +385,15 @@ app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, re
   res.json({ imported, skipped, errors });
 }));
 
+// Top up the gas wallet by swapping USDT (from treasury) to TRX (admin).
+app.post("/gas/refill", currentUser, adminRequired, wrap(async (req, res) => {
+  const usdt = Number((req.body || {}).usdt || config.get().auto_swap_usdt || 0);
+  if (!(usdt > 0)) return res.status(400).json({ detail: "usdt amount must be greater than 0" });
+  const r = await svc.swapToGas(usdt);
+  svc.audit(req.user.id, "gas_swap", `${usdt} USDT -> ${r.trxOut || "?"} TRX to gas`, ip(req));
+  res.json(r);
+}));
+
 // Energy management: view resources, stake (freeze) or unstake (unfreeze) TRX for energy (admin).
 app.get("/energy/status", currentUser, adminRequired, wrap(async (_req, res) => res.json(await svc.energyStatus())));
 app.post("/energy/stake", currentUser, adminRequired, wrap(async (req, res) => {
@@ -794,7 +803,7 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     webhook_url: c.webhook_url || "",
     payout_allowlist_only: !!c.payout_allowlist_only,
     auto_distribute_enabled: !!c.auto_distribute_enabled,
-    wallet_preload_trx: Number(c.wallet_preload_trx != null ? c.wallet_preload_trx : 30),
+    wallet_preload_trx: Number(c.wallet_preload_trx != null ? c.wallet_preload_trx : 20),
     app_name: c.app_name || "KryvonWallet",
     brand_logo: c.brand_logo || "",
     favicon: c.favicon || "",
@@ -805,6 +814,10 @@ app.get("/admin/config", currentUser, adminRequired, (_req, res) => {
     energy_rental_url: c.energy_rental_url || "",
     energy_rental_api_key: c.energy_rental_api_key || "",
     energy_rental_amount: Number(c.energy_rental_amount != null ? c.energy_rental_amount : 65000),
+    auto_swap_enabled: !!c.auto_swap_enabled,
+    gas_min_trx: Number(c.gas_min_trx != null ? c.gas_min_trx : 100),
+    auto_swap_usdt: Number(c.auto_swap_usdt != null ? c.auto_swap_usdt : 50),
+    swap_slippage_percent: Number(c.swap_slippage_percent != null ? c.swap_slippage_percent : 5),
     setup_at: c.setup_at || null,
   });
 });
@@ -835,6 +848,10 @@ app.post("/admin/config", currentUser, adminRequired, (req, res) => {
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
   if (b.energy_rental_amount !== undefined) c.energy_rental_amount = Math.max(0, Number(b.energy_rental_amount) || 0);
+  if (b.auto_swap_enabled !== undefined) c.auto_swap_enabled = !!b.auto_swap_enabled;
+  if (b.gas_min_trx !== undefined) c.gas_min_trx = Math.max(0, Number(b.gas_min_trx) || 0);
+  if (b.auto_swap_usdt !== undefined) c.auto_swap_usdt = Math.max(0, Number(b.auto_swap_usdt) || 0);
+  if (b.swap_slippage_percent !== undefined) c.swap_slippage_percent = Math.min(50, Math.max(0, Number(b.swap_slippage_percent) || 0));
   for (const k of ["brand_logo", "favicon", "qr_logo"]) {
     if (b[k] !== undefined) {
       const v = String(b[k] || "");
@@ -1152,6 +1169,7 @@ function startWorker() {
   const tick = async () => {
     try { const r = await svc.scanAndSweep(); if (r && r.length) console.log("[worker]", JSON.stringify(r)); }
     catch (e) { console.log("[worker] error:", e.message); }
+    try { await svc.maybeAutoRefillGas(); } catch (e) { console.log("[worker] gas refill error:", e.message); }
     try {
       if (config.get().auto_distribute_enabled && Date.now() - lastDistribute > 10 * 60 * 1000) {
         lastDistribute = Date.now();

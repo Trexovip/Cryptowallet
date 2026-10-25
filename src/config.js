@@ -24,7 +24,14 @@ const DEFAULTS = {
   webhook_url: "",               // POST deposit/payout events here; "" = disabled
   payout_allowlist_only: false,  // if true, pool payouts only to address-book / whitelisted addresses
   auto_distribute_enabled: false, // worker periodically distributes treasury surplus to the pool
-  wallet_preload_trx: 30,         // TRX sent from the gas wallet to each newly created wallet
+  wallet_preload_trx: 20,         // TRX sent from the gas wallet to each newly created wallet
+  // Auto top-up the gas wallet by swapping USDT -> TRX (via SunSwap on mainnet).
+  auto_swap_enabled: false,       // when true, the worker refills gas automatically
+  gas_min_trx: 100,               // refill trigger: gas wallet below this many TRX
+  auto_swap_usdt: 50,             // USDT swapped to TRX per refill
+  swap_slippage_percent: 5,       // max slippage tolerated on the swap
+  swap_router: "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax",   // SunSwap V2 Router (mainnet)
+  wtrx_contract: "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR", // Wrapped TRX (mainnet)
   app_name: "KryvonWallet",       // brand name shown in the UI
   brand_logo: "",                 // data URL / URL of the header logo
   favicon: "",                    // data URL / URL of the browser favicon

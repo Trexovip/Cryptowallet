@@ -89,6 +89,24 @@ async function setAccountName(privHex, name) {
   return (res && (res.txid || (res.transaction && res.transaction.txID))) || "";
 }
 
+// Swap USDT -> TRX via SunSwap V2 (Uniswap-V2 fork on TRON) and send the TRX to `toAddress`.
+// NOTE: on-chain DEX swap — test on mainnet with a small amount first; router/WTRX are configurable.
+async function swapUsdtToTrx(fromPrivKey, usdtAmount, toAddress, slippagePct = 5) {
+  const tw = signer(String(fromPrivKey).replace(/^0x/, ""));
+  const c = get();
+  const router = c.swap_router, wtrx = c.wtrx_contract, usdtAddr = c.usdt_contract;
+  const amountIn = Math.round(Number(usdtAmount) * 10 ** USDT_DECIMALS);
+  const token = await tw.contract().at(usdtAddr);
+  await token.approve(router, amountIn).send({ feeLimit: 100_000_000 });
+  const r = await tw.contract().at(router);
+  const amounts = await r.getAmountsOut(amountIn, [usdtAddr, wtrx]).call();
+  const out = Number(amounts[amounts.length - 1].toString());
+  const minOut = Math.floor(out * (1 - Number(slippagePct) / 100));
+  const deadline = Math.floor(Date.now() / 1000) + 600;
+  const txid = await r.swapExactTokensForETH(amountIn, minOut, [usdtAddr, wtrx], toAddress, deadline).send({ feeLimit: 200_000_000 });
+  return { tx: txid, trxOut: out / 1e6 };
+}
+
 // ---- Energy (Stake 2.0) ----
 async function accountResources(address) {
   const r = await base().trx.getAccountResources(address);
@@ -129,4 +147,4 @@ async function signMessage(privHex, message) {
   return await tw.trx.sign(message);
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
