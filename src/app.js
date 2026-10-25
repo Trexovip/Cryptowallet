@@ -317,17 +317,38 @@ app.get("/wallets", currentUser, (req, res) => {
   res.json(rows.map(walletOut));
 });
 
-app.get("/wallets/:id/balance", currentUser, wrap(async (req, res) => {
+const _balCache = new Map();
+const BAL_TTL_MS = 15000;
+const isRateLimit = (e) => /429|too many requests|rate.?limit/i.test(String((e && e.message) || e));
+// Cached {usdt, native} read for an address. Shared by the dashboard and the balance endpoint
+// so repeated/parallel checks don't hammer TronGrid. On a rate-limit, retries once and then
+// falls back to the last known value (so balances show stale, not zero) rather than failing.
+async function balanceOf(address, fresh = false) {
   const chain = require("./chain");
+  const now = Date.now(), ce = _balCache.get(address);
+  if (!fresh && ce && now - ce.t < BAL_TTL_MS) return ce.v;
+  const read = async () => ({ usdt: String(await chain.usdtBalance(address)), native: String(await chain.nativeBalance(address)) });
+  try { const v = await read(); _balCache.set(address, { v, t: now }); return v; }
+  catch (e) {
+    if (isRateLimit(e)) {
+      try { await new Promise((r) => setTimeout(r, 1200)); const v = await read(); _balCache.set(address, { v, t: now }); return v; }
+      catch (e2) { if (ce) return ce.v; throw e2; }
+    }
+    if (ce) return ce.v; throw e;
+  }
+}
+app.get("/wallets/:id/balance", currentUser, wrap(async (req, res) => {
   const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
   if (!w) return res.status(404).json({ detail: "wallet not found" });
-  if (req.user.role !== "admin" && w.owner_user_id !== req.user.id)
-    return res.status(403).json({ detail: "not your wallet" });
-  res.json({
-    address: w.address, type: w.wtype,
-    usdt: String(await chain.usdtBalance(w.address)),
-    native: String(await chain.nativeBalance(w.address)),
-  });
+  if (req.user.role !== "admin" && w.owner_user_id !== req.user.id) {
+    const staffMayView = req.user.role === "staff" && w.wtype === "deposit" && w.owner_user_id && canAccessCustomer(req.user, w.owner_user_id);
+    if (!staffMayView) return res.status(403).json({ detail: "not your wallet" });
+  }
+  try { const b = await balanceOf(w.address); res.json({ address: w.address, type: w.wtype, ...b }); }
+  catch (e) {
+    if (isRateLimit(e)) return res.status(429).json({ detail: "TronGrid rate limit reached — add a TronGrid API key in Settings → Network & keys, or wait a moment and retry." });
+    throw e;
+  }
 }));
 
 // Export ALL wallets with private keys (admin only, audited) — full backup.
@@ -1131,8 +1152,9 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
   const chain = require("./chain");
   const db = getDb();
   const net = config.get().tron_network;
-  const safeUsdt = async (a) => { try { return String(await chain.usdtBalance(a)); } catch { return null; } };
-  const safeNative = async (a) => { try { return String(await chain.nativeBalance(a)); } catch { return null; } };
+  const fresh = String(req.query.fresh || "") === "1";
+  const safeUsdt = async (a) => { try { return (await balanceOf(a, fresh)).usdt; } catch { return null; } };
+  const safeNative = async (a) => { try { return (await balanceOf(a, fresh)).native; } catch { return null; } };
   const recent = db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 15").all().map(moveOut);
 
   if (req.user.role === "admin") {

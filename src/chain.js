@@ -3,6 +3,33 @@
 const { get } = require("./config");
 const USDT_DECIMALS = 6;
 
+// --- Global request throttle for TronGrid (avoids 429 on the free tier) ---
+// Spaces request starts by a minimum gap and caps concurrency. Every network call below
+// is routed through this queue, so bursts (e.g. a dashboard reading many wallets) are smoothed.
+function makeLimiter(rps, concurrency) {
+  const minGap = 1000 / Math.max(1, rps);
+  let active = 0, lastStart = 0;
+  const queue = [];
+  function pump() {
+    if (active >= concurrency || queue.length === 0) return;
+    const wait = Math.max(0, lastStart + minGap - Date.now());
+    if (wait > 0) { setTimeout(pump, wait + 1); return; }
+    const job = queue.shift();
+    active++; lastStart = Date.now();
+    Promise.resolve().then(job.fn).then(job.resolve, job.reject).finally(() => { active--; pump(); });
+    pump();
+  }
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); pump(); });
+}
+let _limit = null;
+function limit(fn) {
+  if (!_limit) {
+    const c = get();
+    _limit = makeLimiter(Number(c.trongrid_rps || 8), Number(c.trongrid_concurrency || 3));
+  }
+  return _limit(fn);
+}
+
 let _TronWeb = null;
 function TW() {
   if (!_TronWeb) {
@@ -30,10 +57,16 @@ async function newWallet() {
   const acct = await base().createAccount(); // generated offline
   return { address: acct.address.base58, privateKey: acct.privateKey };
 }
+const TRC20_MIN_ABI = [
+  { constant: true, inputs: [{ name: "who", type: "address" }], name: "balanceOf", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
+  { constant: false, inputs: [{ name: "to", type: "address" }, { name: "value", type: "uint256" }], name: "transfer", outputs: [{ name: "", type: "bool" }], stateMutability: "nonpayable", type: "function" },
+];
 async function usdtBalance(address) {
   const tw = base();
   tw.setAddress(address);
-  const contract = await tw.contract().at(get().usdt_contract);
+  // Pass a built-in ABI so TronWeb does NOT fetch the contract ABI from TronGrid on every call
+  // (that extra request is a common cause of 429 rate-limit errors).
+  const contract = tw.contract(TRC20_MIN_ABI, get().usdt_contract);
   const raw = await contract.balanceOf(address).call();
   return Number(raw.toString()) / 10 ** USDT_DECIMALS;
 }
@@ -147,4 +180,9 @@ async function signMessage(privHex, message) {
   return await tw.trx.sign(message);
 }
 
-module.exports = { newWallet, usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, addressFromPrivateKey, setAccountName, signMessage, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+// Route every network-touching function through the global throttle/queue.
+const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+const _throttled = {};
+for (const [k, f] of Object.entries(_networkFns)) _throttled[k] = (...args) => limit(() => f(...args));
+// newWallet / addressFromPrivateKey / signMessage are local (no network) — left unthrottled.
+module.exports = { newWallet, addressFromPrivateKey, signMessage, ..._throttled };

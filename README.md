@@ -302,6 +302,16 @@ real funds — **test on mainnet with a small amount first**, and keep a little 
 treasury so it can pay for the swap transaction. Auto-refill is **off by default** and has a 5-minute
 cooldown between swaps.
 
+## Dashboard refresh & TronGrid throttle
+
+- **Dashboard** has a **↻ Refresh** button (forces a live read, bypassing the cache) and
+  **auto-refreshes every 30s** while open, showing an "Updated HH:MM" time. Balances are cached ~15s
+  and, on a rate-limit, fall back to the last known value instead of showing 0.
+- **TronGrid throttle**: every chain request goes through a global queue that caps requests per
+  second and concurrency (defaults `trongrid_rps: 8`, `trongrid_concurrency: 3`), so bursts (like the
+  dashboard reading many wallets) won't trip the free-tier 429 limit. Tune these in config if you
+  have a higher-tier key.
+
 ## Programmatic API & exports
 
 **API keys** (admin → API keys): mint scoped keys (`read`, `deposits`, `payouts`). The key is

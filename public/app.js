@@ -122,7 +122,10 @@ function buildNav(){
     a.onclick = () => route(key); nav.appendChild(a);
   });
 }
+let _dashTimer = null;
+function stopDashTimer(){ if (_dashTimer) { clearInterval(_dashTimer); _dashTimer = null; } }
 function route(sec){
+  if (sec !== "dashboard") stopDashTimer();
   document.querySelectorAll(".nav a").forEach(a => a.classList.toggle("active", a.dataset.sec === sec));
   document.querySelectorAll(".section").forEach(s => s.classList.remove("active"));
   $("#sec-" + sec).classList.add("active");
@@ -146,17 +149,27 @@ function setNetwork(net){
 }
 
 /* ======================================================= DASHBOARD */
-async function renderDashboard(){
-  const sec = $("#sec-dashboard");
-  sec.innerHTML = `<div class="page-head"><div><h1>Dashboard</h1>
-    <p>Overview of balances and recent activity.</p></div></div>
-    <div id="dashBody">Loading…</div>`;
+async function loadDash(fresh){
   try{
-    const d = await api("/dashboard");
+    const d = await api("/dashboard" + (fresh ? "?fresh=1" : ""));
     if (d.role === "admin") { try { d.energy = await api("/energy/status"); } catch (e) {} }
     setNetwork(d.network);
-    $("#dashBody").innerHTML = d.role === "admin" ? adminDash(d) : staffDash(d);
-  }catch(e){ $("#dashBody").innerHTML = emptyState(e.message); }
+    const body = $("#dashBody"); if (body) body.innerHTML = d.role === "admin" ? adminDash(d) : staffDash(d);
+    const st = $("#dashUpdated"); if (st) st.textContent = "Updated " + new Date().toLocaleTimeString();
+  }catch(e){
+    const body = $("#dashBody"); if (body && !body.children.length) body.innerHTML = emptyState(e.message);
+  }
+}
+async function renderDashboard(){
+  const sec = $("#sec-dashboard");
+  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+    <div><h1>Dashboard</h1><p>Overview of balances and recent activity.</p></div>
+    <div style="display:flex;align-items:center;gap:10px"><span class="hint" id="dashUpdated"></span><button class="btn btn-ghost btn-sm" id="dashRefresh">↻ Refresh</button></div></div>
+    <div id="dashBody">Loading…</div>`;
+  $("#dashRefresh").onclick = () => { const b = $("#dashRefresh"); b.disabled = true; b.textContent = "…"; loadDash(true).finally(() => { b.disabled = false; b.textContent = "↻ Refresh"; }); };
+  await loadDash(false);
+  stopDashTimer();
+  _dashTimer = setInterval(() => { if ($("#sec-dashboard") && $("#sec-dashboard").classList.contains("active")) loadDash(false); else stopDashTimer(); }, 30000);
 }
 function adminDash(d){
   const poolTotal = (d.pool || []).reduce((s,w) => s + (Number(w.usdt)||0), 0);
@@ -329,7 +342,7 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th><th></th></tr></thead><tbody>
            ${deposits.map(w => `<tr><td>${esc(uname(w.owner_user_id))}</td>
              <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="deposit">Remove</button></td></tr>`).join("")}</tbody></table>`
+             <td class="row-actions"><span class="hint" id="bal-${w.id}"></span><button class="btn btn-ghost btn-sm" data-bal="${w.id}">Balance</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="deposit">Remove</button></td></tr>`).join("")}</tbody></table>`
         : emptyState("No deposit addresses yet.")}
       </div></div>
 
@@ -678,6 +691,16 @@ async function openReceipt(key){
   catch (e) { toast(e.message, true); }
 }
 
+async function checkWalletBalance(btn){
+  const id = btn.dataset.bal, span = document.getElementById("bal-" + id);
+  const prev = btn.textContent; btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await api("/wallets/" + id + "/balance");
+    const txt = `${fmtUsdt(r.usdt)} USDT · ${fmtTrx(r.native)} TRX`;
+    if (span) span.textContent = txt; else toast(txt);
+  } catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; btn.textContent = prev; }
+}
 document.addEventListener("click", (e) => {
   const pf = e.target.closest("[data-proof]");
   if (pf){ showProof(pf.dataset.proof); return; }
@@ -685,6 +708,8 @@ document.addEventListener("click", (e) => {
   if (wn){ openWalletName(wn.dataset.wname, wn.dataset.wlabel || ""); return; }
   const sk = e.target.closest("[data-secret]");
   if (sk){ showSecret(sk.dataset.secret); return; }
+  const bl = e.target.closest("[data-bal]");
+  if (bl){ checkWalletBalance(bl); return; }
   const ut = e.target.closest("[data-usertx]");
   if (ut){ openUserTx(ut.dataset.usertx); return; }
   const q = e.target.closest("[data-qr]");
@@ -846,7 +871,9 @@ async function openCustomer(id){
           <div class="form-actions" style="margin-top:6px">
             <button class="btn btn-ghost btn-sm" data-copy="${esc(w.address)}">Copy</button>
             <button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label || c.username)}" data-qrcustomer="${esc(c.username)}">QR</button>
+            <button class="btn btn-ghost btn-sm" data-bal="${w.id}">Balance</button>
             <button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button>
+            <span class="hint" id="bal-${w.id}"></span>
           </div></div>`).join("") || emptyState("No deposit address.")}
         <div class="hint">Deposits here settle to treasury automatically; the customer sees them in their portal.</div></div></div>`;
     } else {

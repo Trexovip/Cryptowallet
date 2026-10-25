@@ -32,6 +32,8 @@ const DEFAULTS = {
   swap_slippage_percent: 5,       // max slippage tolerated on the swap
   swap_router: "TKzxdSv2FZKQrEqkKVgp5DcwEXBEKMg2Ax",   // SunSwap V2 Router (mainnet)
   wtrx_contract: "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR", // Wrapped TRX (mainnet)
+  trongrid_rps: 8,                // max TronGrid request starts per second (throttle)
+  trongrid_concurrency: 3,        // max concurrent TronGrid requests
   app_name: "KryvonWallet",       // brand name shown in the UI
   brand_logo: "",                 // data URL / URL of the header logo
   favicon: "",                    // data URL / URL of the browser favicon
