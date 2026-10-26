@@ -197,6 +197,15 @@ Every wallet (treasury, gas, pool, deposit) has a **Name** button (admin). You c
   prominent public label is curated by Tronscan (verified entities apply for it), so a self-set
   on-chain name is not guaranteed to appear there.
 
+## Full backup (customers + wallets + transactions)
+
+Backup & restore → **Full backup** exports a complete snapshot — **customers** (with whitelists,
+staff assignments and their login hash), **staff**, **all wallets with private keys**, and the
+**transaction history** — as one JSON file. **Restore** re-creates any missing customers/staff first,
+then imports wallets and **maps each wallet back to its customer by username**, then imports the
+ledger. Everything is de-duplicated, so re-importing is safe and nothing moves on-chain. (The
+wallet-only backup is still there for quick key export/import.)
+
 ## Managing wallets (import, remove, re-add)
 
 - **Import to a customer**: a customer's **Manage** page has *Import a deposit wallet* (add an
@@ -218,6 +227,12 @@ shows a "contact support" message instead.
 
 Share dialogs also produce a polished **branded QR card** (logo-in-QR, wallet/customer name, and
 address) you can download or send.
+
+## Staff visibility
+
+Staff see **only their assigned customers** and **only transactions involving those customers**
+(their deposits and payouts) plus anything the staff member initiated. Admins see everyone. Assign
+customers to staff from a customer's Manage page.
 
 ## Staff assignments & messaging
 

@@ -336,3 +336,19 @@ tbody tr:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,transparen
 
 .page-head h1{font-size:26px;font-weight:750}
 .page-head p{font-size:13.5px}
+
+/* keep KPI numbers inside their cards */
+.readout{overflow:hidden}
+.readout .value{font-size:28px;line-height:1.15;overflow-wrap:anywhere;word-break:break-word}
+.readout .value.lead{font-size:32px}
+.readout .unit{white-space:nowrap;font-size:13px}
+.stat-row .s .n{overflow-wrap:anywhere;word-break:break-word;line-height:1.1}
+
+/* ---------- sub-page tabs (settings / wallets) ---------- */
+.tabbar{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 18px;border-bottom:1px solid var(--line)}
+.tabbar button{background:none;border:none;border-bottom:2px solid transparent;padding:10px 15px;font:inherit;
+  font-size:13.5px;font-weight:600;color:var(--muted);cursor:pointer;border-radius:10px 10px 0 0;margin-bottom:-1px}
+.tabbar button:hover{color:var(--ink);background:var(--surface-2)}
+.tabbar button.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
+.tab-pane{display:none}
+.tab-pane.active{display:block;animation:fade .15s ease}

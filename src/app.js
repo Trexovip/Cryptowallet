@@ -8,7 +8,7 @@ const svc = require("./services");
 
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "16mb" }));
 app.use(express.urlencoded({ extended: false }));
 
 const PUBLIC = path.join(__dirname, "..", "public");
@@ -17,6 +17,7 @@ app.use("/static", express.static(PUBLIC));
 const ip = (req) => (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "";
 const userOut = (u) => ({ id: u.id, username: u.username, role: u.role, is_active: !!u.is_active, customer_type: u.customer_type || null, auto_approve_limit: u.auto_approve_limit != null ? Number(u.auto_approve_limit) : null, phone: u.phone || null });
 const assignedStaffIds = (customerId) => getDb().prepare("SELECT staff_id FROM customer_staff WHERE customer_id=?").all(customerId).map((r) => r.staff_id);
+const assignedCustomerIds = (staffId) => getDb().prepare("SELECT customer_id FROM customer_staff WHERE staff_id=?").all(staffId).map((r) => r.customer_id);
 function ensurePayToken(u) {
   if (u.pay_token) return u.pay_token;
   const tok = crypto.randomBytes(12).toString("base64url");
@@ -632,7 +633,10 @@ app.post("/customers", currentUser, staffOrAdmin, wrap(async (req, res) => {
   const out = { id: custId, username, role: "customer", customer_type };
 
   if (customer_type === "depositor") {
-    const w = await svc.createWallet("deposit", custId, String(label || `${username} deposit`));
+    const pk = String((req.body || {}).private_key || "").trim();
+    const w = pk
+      ? await svc.importWallet(pk, "deposit", custId, String(label || `${username} deposit`), false)
+      : await svc.createWallet("deposit", custId, String(label || `${username} deposit`));
     out.deposit_address = w.address;
   } else if (whitelist_address) {
     getDb().prepare("INSERT INTO customer_whitelist(customer_id,address,label,is_active,created_by,created_at) VALUES(?,?,?,1,?,?)")
@@ -643,8 +647,9 @@ app.post("/customers", currentUser, staffOrAdmin, wrap(async (req, res) => {
   res.json(out);
 }));
 
-app.get("/customers", currentUser, staffOrAdmin, (_req, res) => {
-  const rows = getDb().prepare("SELECT * FROM users WHERE role='customer' ORDER BY id").all();
+app.get("/customers", currentUser, staffOrAdmin, (req, res) => {
+  let rows = getDb().prepare("SELECT * FROM users WHERE role='customer' ORDER BY id").all();
+  if (req.user.role === "staff") { const ids = new Set(assignedCustomerIds(req.user.id)); rows = rows.filter((u) => ids.has(u.id)); }
   res.json(rows.map((u) => {
     const wl = getDb().prepare("SELECT COUNT(*) c FROM customer_whitelist WHERE customer_id=? AND is_active=1").get(u.id).c;
     const dep = getDb().prepare("SELECT address FROM wallets WHERE owner_user_id=? AND wtype='deposit' LIMIT 1").get(u.id);
@@ -656,6 +661,7 @@ app.get("/customers", currentUser, staffOrAdmin, (_req, res) => {
 app.get("/customers/:id", currentUser, staffOrAdmin, (req, res) => {
   const u = getDb().prepare("SELECT * FROM users WHERE id=? AND role='customer'").get(req.params.id);
   if (!u) return res.status(404).json({ detail: "customer not found" });
+  if (req.user.role === "staff" && !canAccessCustomer(req.user, u.id)) return res.status(403).json({ detail: "not your customer" });
   const whitelist = getDb().prepare("SELECT id,address,label,is_active FROM customer_whitelist WHERE customer_id=? AND is_active=1").all(u.id);
   const deposit_addresses = getDb().prepare("SELECT id,address,label FROM wallets WHERE owner_user_id=? AND wtype='deposit'").all(u.id);
   const assigned_staff = getDb().prepare("SELECT u.id,u.username FROM customer_staff cs JOIN users u ON u.id=cs.staff_id WHERE cs.customer_id=?").all(u.id);
@@ -992,6 +998,46 @@ app.get("/transactions.csv", currentUser, adminRequired, (_req, res) => {
   const lines = [head.join(",")].concat(rows.map((m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.status, m.tx_hash, userName(m.initiated_by)].map(csvEscape).join(",")));
   res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=transactions.csv").send(lines.join("\n"));
 });
+
+// Export the ledger as JSON (admin).
+app.get("/transactions.json", currentUser, adminRequired, (req, res) => {
+  const rows = getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 100000").all()
+    .map((m) => ({ kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: userName(m.initiated_by) }));
+  svc.audit(req.user.id, "export_transactions", `${rows.length} rows`, ip(req));
+  res.set("Content-Type", "application/json").set("Content-Disposition", "attachment; filename=transactions.json")
+     .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, transactions: rows }, null, 2));
+});
+
+// Import ledger rows from a JSON/CSV export (admin, audited). Deduplicates; does NOT move funds.
+app.post("/transactions/import", currentUser, adminRequired, wrap(async (req, res) => {
+  const body = req.body || {};
+  const rows = Array.isArray(body) ? body : (body.transactions || []);
+  if (!Array.isArray(rows) || !rows.length) return res.status(400).json({ detail: "no transactions to import" });
+  const db = getDb();
+  const userIdByName = (name) => { if (!name) return null; const u = db.prepare("SELECT id FROM users WHERE username=?").get(String(name)); return u ? u.id : null; };
+  const existsTx = db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND kind=? AND amount=?");
+  const existsNoTx = db.prepare("SELECT 1 FROM movements WHERE kind=? AND from_address IS ? AND to_address IS ? AND amount=? AND created_at=?");
+  const ins = db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  let imported = 0, skipped = 0; const errors = [];
+  for (const r of rows) {
+    try {
+      const kind = String(r.kind || "").trim();
+      const amount = (r.amount != null ? String(r.amount) : "").trim();
+      if (!kind || !amount) { skipped++; continue; }
+      const tx = r.tx_hash ? String(r.tx_hash) : null;
+      const from = (r.from_address != null && r.from_address !== "") ? String(r.from_address) : null;
+      const to = (r.to_address != null && r.to_address !== "") ? String(r.to_address) : null;
+      const created = r.created_at ? String(r.created_at) : new Date().toISOString();
+      const dup = tx ? existsTx.get(tx, kind, amount) : existsNoTx.get(kind, from, to, amount, created);
+      if (dup) { skipped++; continue; }
+      ins.run(kind, "tron", String(r.token || "USDT"), from, to, amount, tx, String(r.status || "confirmed"), null,
+        userIdByName(r.initiated_by), String(r.note || "imported"), (r.usd_rate != null && r.usd_rate !== "") ? String(r.usd_rate) : null, created);
+      imported++;
+    } catch (e) { if (errors.length < 5) errors.push(String(e.message || e)); }
+  }
+  svc.audit(req.user.id, "import_transactions", `imported ${imported}, skipped ${skipped}`, ip(req));
+  res.json({ imported, skipped, errors });
+}));
 app.get("/audit.csv", currentUser, adminRequired, (_req, res) => {
   const rows = getDb().prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT 10000").all();
   const head = ["id", "created_at", "user_id", "action", "detail", "ip"];
@@ -1062,22 +1108,128 @@ app.get("/movements", currentUser, (req, res) => {
 });
 
 // Transaction history. Admin: all, or ?user_id= to scope to one user. Staff: own only.
+// Movements relevant to one user id: initiated by them, deposits on their wallets, or payouts tied to them.
+function relevantMovements(db, ownerIds, extraInitiators, limit) {
+  const walletIds = ownerIds.length ? db.prepare(`SELECT id FROM wallets WHERE owner_user_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((w) => w.id) : [];
+  const txs = ownerIds.length ? db.prepare(`SELECT tx_hash FROM disbursement_requests WHERE tx_hash IS NOT NULL AND customer_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((r) => r.tx_hash) : [];
+  const clauses = []; const params = [];
+  const initiators = extraInitiators.filter((x) => x != null);
+  if (initiators.length) { clauses.push(`initiated_by IN (${initiators.map(() => "?").join(",")})`); params.push(...initiators); }
+  if (walletIds.length) { clauses.push(`(kind='deposit_in' AND wallet_id IN (${walletIds.map(() => "?").join(",")}))`); params.push(...walletIds); }
+  if (txs.length) { clauses.push(`tx_hash IN (${txs.map(() => "?").join(",")})`); params.push(...txs); }
+  if (!clauses.length) return [];
+  return db.prepare(`SELECT * FROM movements WHERE ${clauses.join(" OR ")} ORDER BY id DESC LIMIT ?`).all(...params, limit);
+}
+// Full backup: customers (with whitelist + staff links + password hash), staff, wallets, transactions.
+app.get("/backup/export", currentUser, adminRequired, (req, res) => {
+  const db = getDb();
+  const staff = db.prepare("SELECT * FROM users WHERE role IN ('staff','admin')").all().map((u) => ({
+    username: u.username, role: u.role, password_hash: u.password_hash, auto_approve_limit: u.auto_approve_limit, is_active: u.is_active,
+  }));
+  const customers = db.prepare("SELECT * FROM users WHERE role='customer'").all().map((u) => ({
+    username: u.username, customer_type: u.customer_type, phone: u.phone, pay_token: u.pay_token, is_active: u.is_active, password_hash: u.password_hash,
+    whitelist: db.prepare("SELECT address,label FROM customer_whitelist WHERE customer_id=? AND is_active=1").all(u.id),
+    staff: db.prepare("SELECT us.username FROM customer_staff cs JOIN users us ON us.id=cs.staff_id WHERE cs.customer_id=?").all(u.id).map((r) => r.username),
+  }));
+  const wallets = db.prepare("SELECT * FROM wallets ORDER BY id").all().map((w) => {
+    let pk = ""; try { pk = sec.decryptSecret(w.enc_privkey); } catch { pk = ""; }
+    return { type: friendlyType(w.wtype), label: w.label, address: w.address, owner: w.owner_user_id ? userName(w.owner_user_id) : "", private_key: pk };
+  });
+  const transactions = db.prepare("SELECT * FROM movements ORDER BY id").all().map((m) => ({
+    kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: userName(m.initiated_by),
+  }));
+  svc.audit(req.user.id, "export_full_backup", `${customers.length} customers, ${wallets.length} wallets, ${transactions.length} tx`, ip(req));
+  res.set("Content-Type", "application/json").set("Content-Disposition", "attachment; filename=kryvonwallet-full-backup.json")
+     .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, staff, customers, wallets, transactions }, null, 2));
+});
+
+app.post("/backup/import", currentUser, adminRequired, wrap(async (req, res) => {
+  const b = req.body || {};
+  const db = getDb();
+  const out = { staff: 0, customers: 0, whitelist: 0, assignments: 0, wallets: 0, transactions: 0, skipped: 0, errors: [] };
+  const err = (m) => { if (out.errors.length < 10) out.errors.push(m); };
+  const userByName = (name) => db.prepare("SELECT * FROM users WHERE username=?").get(String(name));
+  const randPw = () => sec.hashPassword(crypto.randomBytes(9).toString("base64url"));
+
+  for (const s of (b.staff || [])) {
+    try {
+      if (!s.username || userByName(s.username)) continue;
+      const role = s.role === "admin" ? "admin" : "staff";
+      db.prepare("INSERT INTO users(username,password_hash,role,is_active,auto_approve_limit,created_at) VALUES(?,?,?,?,?,?)")
+        .run(s.username, s.password_hash || randPw(), role, s.is_active != null ? (s.is_active ? 1 : 0) : 1, s.auto_approve_limit != null ? s.auto_approve_limit : null, new Date().toISOString());
+      out.staff++;
+    } catch (e) { err("staff " + (s.username || "") + ": " + e.message); }
+  }
+  for (const c of (b.customers || [])) {
+    try {
+      if (!c.username) continue;
+      let u = userByName(c.username);
+      if (!u) {
+        db.prepare("INSERT INTO users(username,password_hash,role,is_active,customer_type,phone,pay_token,created_at) VALUES(?,?,'customer',?,?,?,?,?)")
+          .run(c.username, c.password_hash || randPw(), c.is_active != null ? (c.is_active ? 1 : 0) : 1, c.customer_type || "depositor", c.phone || null, c.pay_token || crypto.randomBytes(12).toString("base64url"), new Date().toISOString());
+        u = userByName(c.username); out.customers++;
+      }
+      for (const w of (c.whitelist || [])) {
+        if (!w.address) continue;
+        if (!db.prepare("SELECT 1 FROM customer_whitelist WHERE customer_id=? AND address=?").get(u.id, w.address)) {
+          db.prepare("INSERT INTO customer_whitelist(customer_id,address,label,is_active,created_at) VALUES(?,?,?,1,?)").run(u.id, w.address, w.label || null, new Date().toISOString());
+          out.whitelist++;
+        }
+      }
+      for (const sn of (c.staff || [])) {
+        const st = userByName(sn); if (!st) continue;
+        if (!db.prepare("SELECT 1 FROM customer_staff WHERE customer_id=? AND staff_id=?").get(u.id, st.id)) {
+          db.prepare("INSERT INTO customer_staff(customer_id,staff_id,created_at) VALUES(?,?,?)").run(u.id, st.id, new Date().toISOString());
+          out.assignments++;
+        }
+      }
+    } catch (e) { err("customer " + (c.username || "") + ": " + e.message); }
+  }
+  for (const it of (b.wallets || [])) {
+    try {
+      const pk = String(it.private_key || it.privateKey || "").trim(); if (!pk) { out.skipped++; continue; }
+      const wtype = wtypeFromFriendly(it.type || it.wtype); if (!wtype) { err("wallet type: " + (it.type || it.wtype)); continue; }
+      if (wtype === "treasury" && svc.getTreasury()) { out.skipped++; continue; }
+      let ownerId = null; if (it.owner) { const u = userByName(it.owner); if (u) ownerId = u.id; }
+      await svc.importWallet(pk, wtype, ownerId, String(it.label || ""), false);
+      out.wallets++;
+    } catch (e) { if (String(e.message).includes("already exists")) out.skipped++; else err("wallet: " + e.message); }
+  }
+  {
+    const existsTx = db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND kind=? AND amount=?");
+    const existsNoTx = db.prepare("SELECT 1 FROM movements WHERE kind=? AND from_address IS ? AND to_address IS ? AND amount=? AND created_at=?");
+    const ins = db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    for (const r of (b.transactions || [])) {
+      try {
+        const kind = String(r.kind || "").trim(); const amount = (r.amount != null ? String(r.amount) : "").trim();
+        if (!kind || !amount) { out.skipped++; continue; }
+        const tx = r.tx_hash ? String(r.tx_hash) : null;
+        const from = (r.from_address != null && r.from_address !== "") ? String(r.from_address) : null;
+        const to = (r.to_address != null && r.to_address !== "") ? String(r.to_address) : null;
+        const created = r.created_at ? String(r.created_at) : new Date().toISOString();
+        const dup = tx ? existsTx.get(tx, kind, amount) : existsNoTx.get(kind, from, to, amount, created);
+        if (dup) { out.skipped++; continue; }
+        let by = null; if (r.initiated_by) { const u = userByName(r.initiated_by); by = u ? u.id : null; }
+        ins.run(kind, "tron", String(r.token || "USDT"), from, to, amount, tx, String(r.status || "confirmed"), null, by, String(r.note || "imported"), (r.usd_rate != null && r.usd_rate !== "") ? String(r.usd_rate) : null, created);
+        out.transactions++;
+      } catch (e) { err("tx: " + e.message); }
+    }
+  }
+  svc.audit(req.user.id, "import_full_backup", `customers ${out.customers}, wallets ${out.wallets}, tx ${out.transactions}`, ip(req));
+  res.json(out);
+}));
+
 app.get("/transactions", currentUser, staffOrAdmin, (req, res) => {
   const db = getDb();
   const limit = Math.min(2000, parseInt(req.query.limit, 10) || 500);
-  let uid = req.query.user_id ? Number(req.query.user_id) : null;
-  if (req.user.role !== "admin") uid = req.user.id; // staff see only their own
-  if (!uid) {
-    return res.json(db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit).map(txOut));
+  if (req.user.role === "admin") {
+    const uid = req.query.user_id ? Number(req.query.user_id) : null;
+    if (!uid) return res.json(db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit).map(txOut));
+    return res.json(relevantMovements(db, [uid], [uid], limit).map(txOut));
   }
-  // movements relevant to this user: initiated by them, on their wallets, or paid to them (remittance)
-  const walletIds = db.prepare("SELECT id FROM wallets WHERE owner_user_id=?").all(uid).map((w) => w.id);
-  const txs = db.prepare("SELECT tx_hash FROM disbursement_requests WHERE customer_id=? AND tx_hash IS NOT NULL").all(uid).map((r) => r.tx_hash);
-  const clauses = ["initiated_by=?"]; const params = [uid];
-  if (walletIds.length) { clauses.push(`(kind='deposit_in' AND wallet_id IN (${walletIds.map(() => "?").join(",")}))`); params.push(...walletIds); }
-  if (txs.length) { clauses.push(`tx_hash IN (${txs.map(() => "?").join(",")})`); params.push(...txs); }
-  const rows = db.prepare(`SELECT * FROM movements WHERE ${clauses.join(" OR ")} ORDER BY id DESC LIMIT ?`).all(...params, limit);
-  res.json(rows.map(txOut));
+  // staff: only their own activity + their assigned customers' deposits & payouts
+  const custIds = assignedCustomerIds(req.user.id);
+  res.json(relevantMovements(db, custIds, [req.user.id], limit).map(txOut));
 });
 
 // Analytics / reports summary (admin)

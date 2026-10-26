@@ -152,7 +152,7 @@ function setNetwork(net){
 async function loadDash(fresh){
   try{
     const d = await api("/dashboard" + (fresh ? "?fresh=1" : ""));
-    if (d.role === "admin") { try { d.energy = await api("/energy/status"); } catch (e) {} }
+    if (d.role === "admin") { try { d.energy = await api("/energy/status"); } catch (e) {} try { d.report = await api("/reports/summary?days=14"); } catch (e) {} }
     setNetwork(d.network);
     const body = $("#dashBody"); if (body) body.innerHTML = d.role === "admin" ? adminDash(d) : staffDash(d);
     const st = $("#dashUpdated"); if (st) st.textContent = "Updated " + new Date().toLocaleTimeString();
@@ -208,6 +208,11 @@ function adminDash(d){
       <div class="s"><div class="n num">${d.deposit_wallet_count}</div><div class="l">Deposit addresses</div></div>
     </div></div>
   </div>
+  ${d.report ? `<div class="panel"><div class="panel-head"><h2>Deposits vs payouts — last ${d.report.days} days</h2>
+    <div style="font-size:12px;color:var(--muted)"><span style="color:var(--accent-ink)">■</span> deposits &nbsp; <span style="color:var(--warn)">■</span> payouts</div></div>
+    <div class="panel-body">${barChartSVG(d.report.series)}</div></div>
+  ${d.report.top_customers && d.report.top_customers.length ? `<div class="panel"><div class="panel-head"><h2>Top customers by received</h2></div><div class="panel-body flush">
+    <table><thead><tr><th>Customer</th><th class="amt">Received (USDT)</th><th class="amt">Transfers</th></tr></thead><tbody>${d.report.top_customers.slice(0,5).map(c=>`<tr><td>${esc(c.username)}</td><td class="amt num">${fmtUsdt(c.v)}</td><td class="amt num">${c.c}</td></tr>`).join("")}</tbody></table></div></div>` : ""}` : ""}
   ${movementsPanel(d.recent_movements)}`;
 }
 function staffDash(d){
@@ -264,6 +269,8 @@ async function renderWallets(){
     const fr = t => ({ treasury: "Treasury", fee: "Gas", disbursement: "Pool", deposit: "Deposit" }[t] || t);
 
     $("#wBody").innerHTML = `
+    <div class="tabbar" id="walTabs"><button data-tab="operator" class="active">Treasury &amp; gas</button><button data-tab="pool">Pool</button><button data-tab="deposit">Deposit</button><button data-tab="manage">Import / removed</button></div>
+    <div class="tab-pane active" data-tab="operator">
     <div class="panel"><div class="panel-head"><h2>Treasury (master)</h2>
       ${treasury ? "" : `<button class="btn btn-primary btn-sm" id="mkTreasury">Create treasury</button>`}</div>
       <div class="panel-body">${treasury
@@ -311,6 +318,8 @@ async function renderWallets(){
         : `<span class="hint">Needed to pay the network fee when sweeping TRC-20 deposits.</span>`}
       </div></div>
 
+    </div>
+    <div class="tab-pane" data-tab="pool">
     <div class="panel"><div class="panel-head"><h2>Disbursement pool (${pool.length})</h2>
       <div class="row-actions">
         <input id="poolCount" class="input" style="width:72px" type="number" min="1" max="50" value="5">
@@ -325,6 +334,8 @@ async function renderWallets(){
         : emptyState("No pool wallets yet. Payouts draw from these, topped up from treasury.")}
       </div></div>
 
+    </div>
+    <div class="tab-pane" data-tab="deposit">
     <div class="panel"><div class="panel-head"><h2>Deposit addresses (${deposits.length})</h2></div>
       <div class="panel-body">
         <div class="form-grid">
@@ -346,6 +357,8 @@ async function renderWallets(){
         : emptyState("No deposit addresses yet.")}
       </div></div>
 
+    </div>
+    <div class="tab-pane" data-tab="manage">
     ${inactive.length?`<div class="panel"><div class="panel-head"><h2>Removed wallets (${inactive.length})</h2></div><div class="panel-body flush">
       <table><thead><tr><th>Type</th><th>Owner</th><th>Address</th><th></th></tr></thead><tbody>
       ${inactive.map(w=>`<tr><td>${esc(fr(w.wtype))}</td><td>${esc(uname(w.owner_user_id))}</td><td>${addrHtml(w.address)}</td>
@@ -368,7 +381,8 @@ async function renderWallets(){
       <div class="field"><label>Label (optional)</label><input id="impLabel" class="input" placeholder="e.g. cold-storage import"></div>
       <button class="btn btn-primary" id="impBtn">Import wallet</button>
       <div class="hint" style="margin-top:6px">The key is encrypted at rest, same as generated wallets. Admin only.</div>
-    </div></div>`;
+    </div></div>
+    </div>`;
 
     wireWalletActions();
   }catch(e){ $("#wBody").innerHTML = emptyState(e.message); }
@@ -723,6 +737,11 @@ async function checkWalletBalance(btn){
   finally { btn.disabled = false; btn.textContent = prev; }
 }
 document.addEventListener("click", (e) => {
+  const tb = e.target.closest(".tabbar button[data-tab]");
+  if (tb){ const bar = tb.closest(".tabbar"), scope = bar.parentElement, tab = tb.dataset.tab;
+    bar.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === tb));
+    scope.querySelectorAll(".tab-pane").forEach((p) => p.classList.toggle("active", p.dataset.tab === tab));
+    return; }
   const pf = e.target.closest("[data-proof]");
   if (pf){ showProof(pf.dataset.proof); return; }
   const wn = e.target.closest("[data-wname]");
@@ -857,15 +876,17 @@ function customerForm(){
     </div>
     <div class="field"><label>Phone (optional)</label><input id="cPhone" class="input" placeholder="+15551234567"></div>
     <div class="field" id="cWlField" style="display:none"><label>Whitelisted payout address (TRC-20)</label><input id="cWl" class="input mono" placeholder="T…"></div>
+    <div class="field" id="cImpField"><label>Import existing wallet (private key, optional)</label><input id="cImpKey" class="input mono" placeholder="leave blank to auto-generate a deposit wallet"></div>
     <button class="btn btn-primary" id="cCreate">Create customer</button></div></div>`;
 }
 function wireCustomerForm(){
   const typeSel = $("#cType");
-  const toggle = () => { $("#cWlField").style.display = typeSel.value === "remittance" ? "" : "none"; };
+  const toggle = () => { const dep = typeSel.value === "depositor"; $("#cWlField").style.display = dep ? "none" : ""; $("#cImpField").style.display = dep ? "" : "none"; };
   typeSel.onchange = toggle; toggle();
   $("#cCreate").onclick = () => {
     const body = { username: $("#cUser").value.trim(), password: $("#cPass").value, customer_type: typeSel.value, label: $("#cLabel").value.trim(), phone: $("#cPhone").value.trim() };
     if (typeSel.value === "remittance") body.whitelist_address = $("#cWl").value.trim();
+    if (typeSel.value === "depositor") { const pk = $("#cImpKey").value.trim(); if (pk) body.private_key = pk; }
     if (body.username.length < 3) return toast("Username too short", true);
     if (body.password.length < 8) return toast("Password must be at least 8 characters", true);
     act(() => api("/customers", { method:"POST", body }), "Customer created", renderCustomers);
@@ -1166,6 +1187,19 @@ function csvToWallets(text){
     owner: iOwner >= 0 ? (r[iOwner] || "").trim() : "",
   }));
 }
+function csvToMovements(text){
+  const rows = parseCsv(text); if (!rows.length) return [];
+  const h = rows[0].map((x) => x.trim().toLowerCase());
+  const gi = (...names) => { for (const n of names) { const k = h.indexOf(n); if (k >= 0) return k; } return -1; };
+  const iKind = gi("kind"), iTok = gi("token"), iFrom = gi("from_address", "from"), iTo = gi("to_address", "to"),
+        iAmt = gi("amount"), iRate = gi("usd_rate", "rate"), iStat = gi("status"), iTx = gi("tx_hash", "tx", "txid"),
+        iBy = gi("initiated_by", "user"), iNote = gi("note"), iAt = gi("created_at", "date", "time");
+  const v = (r, i) => (i >= 0 ? (r[i] || "").trim() : "");
+  return rows.slice(1).map((r) => ({
+    kind: v(r, iKind), token: v(r, iTok), from_address: v(r, iFrom), to_address: v(r, iTo), amount: v(r, iAmt),
+    usd_rate: v(r, iRate), status: v(r, iStat), tx_hash: v(r, iTx), initiated_by: v(r, iBy), note: v(r, iNote), created_at: v(r, iAt),
+  }));
+}
 async function renderBackup(){
   const sec = $("#sec-backup");
   sec.innerHTML = `<div class="page-head"><h1>Backup &amp; restore</h1><p>Export or import every wallet — address, label, type, and private key.</p></div>
@@ -1180,7 +1214,31 @@ pool,pool-1,T...,,abc123...'></textarea></div>
       <button class="btn btn-primary" id="bkImport">Import wallets</button>
       <div id="bkResult" class="hint" style="margin-top:10px"></div>
       <div class="hint">Wallets that already exist (same address) and a second treasury are skipped. Imported wallets aren't pre-funded — they already hold their on-chain balances.</div>
+    </div></div>
+
+    <div class="panel"><div class="panel-head"><h2>Full backup <span class="role-pill">customers + wallets + transactions</span></h2></div><div class="panel-body">
+      <div class="live-note">A complete snapshot: <b>customers</b> (with whitelists, staff assignments and login), <b>staff</b>, <b>all wallets with private keys</b>, and the <b>transaction history</b>. Restore re-creates missing customers and <b>maps their wallets correctly</b>. Store it encrypted and offline.</div>
+      <div class="form-actions" style="margin-top:12px"><button class="btn btn-primary" id="fbExport">Download full backup (JSON)</button></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <div class="field"><label>Restore from full backup (.json)</label><input type="file" id="fbFile" accept=".json,application/json" class="input"></div>
+      <button class="btn btn-primary" id="fbImport">Restore full backup</button>
+      <div id="fbResult" class="hint" style="margin-top:10px"></div>
+      <div class="hint">Existing customers, wallets and transactions are detected and skipped (no duplicates). Customers are created first so their wallets link by username.</div>
     </div></div>`;
+  $("#fbExport").onclick = () => downloadCsv("/backup/export", "kryvonwallet-full-backup.json");
+  $("#fbImport").onclick = async () => {
+    const f = $("#fbFile").files && $("#fbFile").files[0];
+    if (!f) return toast("Choose a full-backup .json file", true);
+    let data; try { data = JSON.parse(await f.text()); } catch (e) { return toast("Invalid JSON file", true); }
+    const btn = $("#fbImport");
+    await withBusy(btn, "Restoring…", async () => {
+      try {
+        const r = await api("/backup/import", { method: "POST", body: data });
+        $("#fbResult").textContent = `Restored — customers ${r.customers}, staff ${r.staff}, wallets ${r.wallets}, transactions ${r.transactions}, assignments ${r.assignments}, whitelist ${r.whitelist}; skipped ${r.skipped}${r.errors && r.errors.length ? `, errors ${r.errors.length}` : ""}.`;
+        toast("Full backup restored");
+      } catch (e) { toast(e.message, true); }
+    });
+  };
   $("#bkExport").onclick = () => downloadCsv("/wallets/export", "kryvonwallet-wallets-backup.json");
   $("#bkExportCsv").onclick = () => downloadCsv("/wallets/export.csv", "kryvonwallet-wallets-backup.csv");
   $("#bkImport").onclick = async () => {
@@ -1257,8 +1315,32 @@ async function renderTransactions(){
   const isAdmin = state.user.role === "admin";
   sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
     <div><h1>Transactions</h1><p>Full history of value movements${isAdmin ? " — filter by any user." : " you initiated."}</p></div>
-    ${isAdmin ? `<button id="txExport" class="btn btn-ghost btn-sm">Export CSV</button>` : ""}</div><div id="txBody">Loading…</div>`;
-  if (isAdmin) { const ex = $("#txExport"); if (ex) ex.onclick = () => downloadCsv("/transactions.csv", "transactions.csv"); }
+    ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button id="txExport" class="btn btn-ghost btn-sm">Export CSV</button>
+      <button id="txExportJson" class="btn btn-ghost btn-sm">Export JSON</button>
+      <button id="txImport" class="btn btn-ghost btn-sm">Import</button>
+      <input type="file" id="txImportFile" accept=".json,.csv,application/json,text/csv" style="display:none">
+    </div>` : ""}</div><div id="txBody">Loading…</div>`;
+  if (isAdmin) {
+    $("#txExport").onclick = () => downloadCsv("/transactions.csv", "transactions.csv");
+    $("#txExportJson").onclick = () => downloadCsv("/transactions.json", "transactions.json");
+    const f = $("#txImportFile");
+    $("#txImport").onclick = () => f.click();
+    f.onchange = async () => {
+      const file = f.files && f.files[0]; if (!file) return;
+      let text; try { text = await file.text(); } catch { f.value = ""; return toast("Could not read file", true); }
+      let transactions;
+      const looksCsv = /\.csv$/i.test(file.name) || (!/^\s*[\[{]/.test(text) && /kind|amount|tx_hash/i.test(text.split(/\r?\n/)[0] || ""));
+      try {
+        if (looksCsv) transactions = csvToMovements(text);
+        else { const d = JSON.parse(text); transactions = Array.isArray(d) ? d : (d.transactions || []); }
+      } catch (e) { f.value = ""; return toast("Could not parse the file (expected JSON or CSV)", true); }
+      if (!transactions || !transactions.length) { f.value = ""; return toast("No transactions found in the file", true); }
+      try { const r = await api("/transactions/import", { method: "POST", body: { transactions } }); toast(`Imported ${r.imported}, skipped ${r.skipped}`); renderTransactions(); }
+      catch (e) { toast(e.message, true); }
+      f.value = "";
+    };
+  }
   try{
     let users = [], customers = [];
     if (isAdmin){
@@ -1329,7 +1411,8 @@ async function renderSettings(){
   try{
     const c = await api("/admin/config");
     $("#stBody").innerHTML = `
-    <div class="set-sec">Policy &amp; operations</div>
+    <div class="tabbar" id="setTabs"><button data-tab="policy" class="active">Policy</button><button data-tab="network">Network &amp; keys</button><button data-tab="fees">Fees &amp; energy</button><button data-tab="branding">Branding</button><button data-tab="security">Security</button></div>
+    <div class="tab-pane active" data-tab="policy">
     <div class="panel"><div class="panel-head"><h2>Payout &amp; deposit policy</h2></div><div class="panel-body">
       <div class="form-grid">
         <div class="field"><label>Default staff auto-approve limit (USDT)</label>
@@ -1343,7 +1426,8 @@ async function renderSettings(){
         <input id="cfgHold" class="input" type="number" step="1" min="0" max="100" value="${esc(c.treasury_hold_percent)}"></div>
     </div></div>
 
-    <div class="set-sec">Network &amp; integrations</div>
+    </div>
+    <div class="tab-pane" data-tab="network">
     <div class="panel"><div class="panel-head"><h2>Network &amp; keys</h2></div><div class="panel-body">
       <div class="form-grid">
         <div class="field"><label>Network</label><select id="cfgNet" class="input">
@@ -1382,7 +1466,8 @@ async function renderSettings(){
       <div class="field"><label style="display:inline-flex;align-items:center;gap:8px;font-weight:400;cursor:pointer"><input type="checkbox" id="cfgAuto" ${c.auto_distribute_enabled ? "checked" : ""}> Auto-distribute treasury surplus to the pool periodically</label></div>
     </div></div>
 
-    <div class="set-sec">Fees &amp; energy</div>
+    </div>
+    <div class="tab-pane" data-tab="fees">
     <div class="panel"><div class="panel-head"><h2>Gas &amp; energy</h2></div><div class="panel-body">
       <div class="hint" style="margin-bottom:10px">USDT (TRC-20) transfers cost <b>Energy</b>. Without energy, TRON burns TRX per transfer (expensive). Use staked or rented energy to cut fees dramatically.</div>
       <div class="field"><label>Fee strategy</label>
@@ -1411,7 +1496,8 @@ async function renderSettings(){
       <div class="hint" style="margin-top:6px">Staking freezes TRX on the gas wallet to produce energy (reversible by unstaking; TRON enforces an unstake waiting period). Delegation to the sending wallet happens automatically on each transfer.</div>
     </div></div>
 
-    <div class="set-sec">Appearance</div>
+    </div>
+    <div class="tab-pane" data-tab="branding">
     <div class="panel"><div class="panel-head"><h2>Branding</h2></div><div class="panel-body">
       <div class="field"><label>App name</label><input id="cfgAppName" class="input" value="${esc(c.app_name || "KryvonWallet")}"></div>
       <div class="field"><label>Customer wallet on-chain name (TRON)</label>
@@ -1424,12 +1510,13 @@ async function renderSettings(){
       <div class="hint">PNG/SVG, square works best, keep under ~500 KB.</div>
     </div></div>
 
-    <div class="set-sec">Security &amp; access</div>
+    </div>
+    <div class="tab-pane" data-tab="security">
     <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
-
-    <button class="btn btn-primary" id="cfgSave">Save settings</button>`;
+    </div>
+    <button class="btn btn-primary" id="cfgSave" style="margin-top:16px">Save settings</button>`;
     $("#cfgSave").onclick = () => {
       const body = {
         staff_auto_approve_limit: parseFloat($("#cfgLimit").value) || 0,
@@ -1530,6 +1617,24 @@ function ensureQrModal(){
 }
 function roundRect(ctx, x, y, w, h, r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 function loadImg(src){ return new Promise((res) => { if (!src) return res(null); const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; }); }
+// Render a QR straight into a (visible, attached) element — most reliable across QR-lib builds —
+// and overlay the brand logo in the centre via the DOM.
+function renderQrInto(box, address, px){
+  if (!box) return;
+  box.innerHTML = ""; box.style.position = "relative";
+  try { new QRCode(box, { text: String(address || ""), width: px, height: px, correctLevel: QRCode.CorrectLevel.H }); }
+  catch (e) { box.textContent = "QR unavailable"; return; }
+  const cv = box.querySelector("canvas"), im = box.querySelector("img");
+  if (cv) { cv.style.display = "block"; if (im) im.style.display = "none"; }
+  else if (im) { im.style.display = "block"; }
+  const logoSrc = (state.branding && (state.branding.qr_logo || state.branding.brand_logo)) || "";
+  if (logoSrc) {
+    const s = Math.round(px * 0.24), lg = document.createElement("img");
+    lg.src = logoSrc; lg.alt = "";
+    lg.style.cssText = `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:${s}px;height:${s}px;object-fit:contain;background:#fff;border-radius:7px;padding:3px;box-shadow:0 0 0 3px #fff`;
+    box.appendChild(lg);
+  }
+}
 async function makeQrCanvas(address, size){
   const tmp = document.createElement("div");
   try { new QRCode(tmp, { text: address, width: size, height: size, correctLevel: QRCode.CorrectLevel.H }); } catch (e) {}
@@ -1618,7 +1723,7 @@ function receiveCard(opts){
 }
 async function mountReceiveCards(root){
   const r = root || document;
-  for (const box of r.querySelectorAll(".rc-qr[data-qrbox]")){ try { const cv = await makeQrCanvas(box.dataset.qrbox, 200); box.innerHTML = ""; box.appendChild(cv); } catch (e) {} }
+  for (const box of r.querySelectorAll(".rc-qr[data-qrbox]")){ renderQrInto(box, box.dataset.qrbox, 200); }
   r.querySelectorAll(".rc-share").forEach((b) => b.onclick = () => showQr(b.dataset.addr, b.dataset.label || "Receive", b.dataset.name));
 }
 async function showQr(address, label, customerName){
@@ -1626,8 +1731,7 @@ async function showQr(address, label, customerName){
   _qrCur = { address, label: label || "KryvonWallet", customerName: customerName || "" };
   $("#qrTitle").textContent = customerName || label || "Receive";
   $("#qrAddr").innerHTML = colorAddr(address);
-  const box = $("#qrBox"); box.innerHTML = "<span class='hint'>Generating…</span>";
-  try { const canvas = await makeQrCanvas(address, 180); box.innerHTML = ""; box.appendChild(canvas); } catch (e) { box.textContent = "QR error"; }
+  renderQrInto($("#qrBox"), address, 190);
   $("#qrBack").classList.add("show");
 }
 
