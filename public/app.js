@@ -966,7 +966,24 @@ async function openCustomer(id){
       <button class="btn btn-primary btn-sm" id="cimpBtn">Import for ${esc(c.username)}</button>
       <div class="hint" style="margin-top:6px">Adds an existing address as this customer's deposit wallet. The key is encrypted at rest.</div>
     </div></div>`;
-    d.innerHTML = main + staffPanel + commsPanel + payPanel + importPanel;
+    const mapPanel = (state.user.role === "admin") ? `<div class="panel"><div class="panel-head"><h2>Map an existing deposit address</h2></div><div class="panel-body">
+      <div class="field"><label>Existing deposit wallet</label><select id="cMapSel" class="input"><option value="">Loading…</option></select></div>
+      <button class="btn btn-primary btn-sm" id="cMapBtn">Map to ${esc(c.username)}</button>
+      <div class="hint" style="margin-top:6px">Re-assigns a deposit wallet already in the system to this customer — no private key needed.</div>
+    </div></div>` : "";
+    d.innerHTML = main + staffPanel + commsPanel + payPanel + importPanel + mapPanel;
+
+    if (state.user.role === "admin") {
+      const sel = $("#cMapSel");
+      api("/wallets").then((ws) => {
+        const dep = ws.filter((w) => w.wtype === "deposit" && w.is_active && w.owner_user_id !== id);
+        sel.innerHTML = dep.length
+          ? dep.map((w) => `<option value="${w.id}">${esc(w.label || w.address.slice(0, 10))} — ${esc(shortAddr(w.address))}${w.owner_user_id ? " (currently owned)" : " (unassigned)"}</option>`).join("")
+          : `<option value="">No other deposit wallets available</option>`;
+      }).catch(() => { sel.innerHTML = `<option value="">Could not load wallets</option>`; });
+      const mb = $("#cMapBtn");
+      if (mb) mb.onclick = () => { const wid = sel.value; if (!wid) return toast("Choose a deposit wallet", true); act(() => api(`/wallets/${wid}/assign`, { method: "POST", body: { owner_user_id: id } }), "Deposit address mapped", () => openCustomer(id)); };
+    }
 
     const cimp = $("#cimpBtn");
     if (cimp) cimp.onclick = () => {

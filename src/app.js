@@ -489,6 +489,22 @@ app.post("/wallets/:id/ownership-proof", currentUser, adminRequired, wrap(async 
   res.json(r);
 }));
 
+// Map an existing deposit wallet to a customer (re-assign owner; no private key needed) — admin.
+app.post("/wallets/:id/assign", currentUser, adminRequired, wrap(async (req, res) => {
+  const w = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(req.params.id);
+  if (!w) return res.status(404).json({ detail: "wallet not found" });
+  if (w.wtype !== "deposit") return res.status(400).json({ detail: "only deposit wallets can be mapped to a customer" });
+  const ownerId = (req.body || {}).owner_user_id;
+  let u = null;
+  if (ownerId) {
+    u = getDb().prepare("SELECT * FROM users WHERE id=? AND role='customer'").get(ownerId);
+    if (!u) return res.status(404).json({ detail: "customer not found" });
+  }
+  getDb().prepare("UPDATE wallets SET owner_user_id=? WHERE id=?").run(u ? u.id : null, w.id);
+  svc.audit(req.user.id, "assign_wallet", `${w.address} -> ${u ? u.username : "unassigned"}`, ip(req));
+  res.json({ ok: true, address: w.address, owner: u ? u.username : null });
+}));
+
 // Import an existing private key as a wallet (admin only).
 // Remove (deactivate) a wallet — soft delete, keeps history; excluded from sweeps/payouts.
 app.post("/wallets/:id/deactivate", currentUser, adminRequired, wrap(async (req, res) => {
