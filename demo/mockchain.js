@@ -13,6 +13,7 @@ const names = {};      // address -> on-chain account name
 const _staked = {};    // address -> TRX frozen for energy (mock)
 const _failTx = {};    // txid -> true when a simulated tx should confirm as failed
 let _failNext = false; // when true, the next sendUsdt simulates an on-chain failure
+let _pendNext = 0;    // number of confirmTx calls that should report "pending" before confirming
 const txid = () => crypto.randomBytes(32).toString("hex");
 const addrFromPk = (pk) => tw.address.fromPrivateKey(pk);
 const randAddr = () => { const b = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"; return "T" + Array.from({length:33},()=>b[Math.floor(Math.random()*b.length)]).join(""); };
@@ -25,7 +26,7 @@ module.exports = {
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
   async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },
-  async confirmTx(txid) { return _failTx[txid] ? "failed" : "confirmed"; },
+  async confirmTx(txid) { if (_failTx[txid]) return "failed"; if (_pendNext > 0) { _pendNext--; return "pending"; } return "confirmed"; },
   async swapUsdtToTrx(pk, usdtAmount, toAddress) {
     const owner = addrFromPk(String(pk).replace(/^0x/, "")); usdtAmount = Number(usdtAmount);
     if ((usdt[owner] || 0) < usdtAmount) throw new Error("insufficient USDT for swap");
@@ -58,5 +59,6 @@ module.exports = {
   },
   __seedTrx(addr, amt) { trx[addr] = (trx[addr] || 0) + amt; },
   __failNextSend(v = true) { _failNext = v; },
+  __pendingNextConfirm(n = 1) { _pendNext = n; },
   __usdt(addr) { return usdt[addr] || 0; },
 };

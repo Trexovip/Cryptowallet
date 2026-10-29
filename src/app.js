@@ -1010,15 +1010,17 @@ app.post("/api/v1/payouts", apiAuth, requireScope("payouts"), wrap(async (req, r
 function csvEscape(v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 app.get("/transactions.csv", currentUser, adminRequired, (_req, res) => {
   const rows = getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 10000").all();
-  const head = ["id", "created_at", "kind", "token", "from_address", "to_address", "amount", "usd_rate", "status", "tx_hash", "initiated_by"];
-  const lines = [head.join(",")].concat(rows.map((m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.status, m.tx_hash, userName(m.initiated_by)].map(csvEscape).join(",")));
+  const who = custLookup(getDb(), rows);
+  const head = ["id", "created_at", "kind", "token", "from_address", "to_address", "amount", "usd_rate", "status", "tx_hash", "initiated_by", "customer"];
+  const lines = [head.join(",")].concat(rows.map((m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.status, m.tx_hash, userName(m.initiated_by), who(m) || ""].map(csvEscape).join(",")));
   res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=transactions.csv").send(lines.join("\n"));
 });
 
 // Export the ledger as JSON (admin).
 app.get("/transactions.json", currentUser, adminRequired, (req, res) => {
-  const rows = getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 100000").all()
-    .map((m) => ({ kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: userName(m.initiated_by) }));
+  const raw = getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 100000").all();
+  const who = custLookup(getDb(), raw);
+  const rows = raw.map((m) => ({ kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: userName(m.initiated_by), customer: who(m) || "" }));
   svc.audit(req.user.id, "export_transactions", `${rows.length} rows`, ip(req));
   res.set("Content-Type", "application/json").set("Content-Disposition", "attachment; filename=transactions.json")
      .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, transactions: rows }, null, 2));
@@ -1128,11 +1130,17 @@ app.get("/movements", currentUser, (req, res) => {
 function relevantMovements(db, ownerIds, extraInitiators, limit) {
   const walletIds = ownerIds.length ? db.prepare(`SELECT id FROM wallets WHERE owner_user_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((w) => w.id) : [];
   const txs = ownerIds.length ? db.prepare(`SELECT tx_hash FROM disbursement_requests WHERE tx_hash IS NOT NULL AND customer_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((r) => r.tx_hash) : [];
+  // the customer's own addresses: their deposit wallet(s) + whitelisted payout address(es)
+  const addrs = ownerIds.length ? [].concat(
+    db.prepare(`SELECT address FROM wallets WHERE owner_user_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((r) => r.address),
+    db.prepare(`SELECT address FROM customer_whitelist WHERE is_active=1 AND customer_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds).map((r) => r.address)
+  ) : [];
   const clauses = []; const params = [];
   const initiators = extraInitiators.filter((x) => x != null);
   if (initiators.length) { clauses.push(`initiated_by IN (${initiators.map(() => "?").join(",")})`); params.push(...initiators); }
   if (walletIds.length) { clauses.push(`(kind='deposit_in' AND wallet_id IN (${walletIds.map(() => "?").join(",")}))`); params.push(...walletIds); }
   if (txs.length) { clauses.push(`tx_hash IN (${txs.map(() => "?").join(",")})`); params.push(...txs); }
+  if (addrs.length) { const ph = addrs.map(() => "?").join(","); clauses.push(`(to_address IN (${ph}) AND kind IN ('deposit_in','disburse_out','treasury_out'))`); params.push(...addrs); }
   if (!clauses.length) return [];
   return db.prepare(`SELECT * FROM movements WHERE ${clauses.join(" OR ")} ORDER BY id DESC LIMIT ?`).all(...params, limit);
 }
@@ -1235,17 +1243,33 @@ app.post("/backup/import", currentUser, adminRequired, wrap(async (req, res) => 
   res.json(out);
 }));
 
+// Build a lookup that maps each movement to its related customer:
+// deposits → the deposit wallet's customer owner; payouts → the disbursement request's customer.
+function custLookup(db, _rows) {
+  // address -> customer username (deposit wallets + whitelisted payout addresses)
+  const addrCust = {};
+  for (const r of db.prepare("SELECT w.address a, u.username un FROM wallets w JOIN users u ON u.id=w.owner_user_id WHERE u.role='customer'").all()) addrCust[r.a] = r.un;
+  for (const r of db.prepare("SELECT cw.address a, u.username un FROM customer_whitelist cw JOIN users u ON u.id=cw.customer_id WHERE cw.is_active=1").all()) if (!addrCust[r.a]) addrCust[r.a] = r.un;
+  // tx_hash -> customer (payout requests) as a fallback
+  const txCust = {};
+  for (const r of db.prepare("SELECT dr.tx_hash th, u.username un FROM disbursement_requests dr JOIN users u ON u.id=dr.customer_id WHERE dr.tx_hash IS NOT NULL").all()) txCust[r.th] = r.un;
+  return (m) => addrCust[m.to_address] || addrCust[m.from_address] || (m.tx_hash && txCust[m.tx_hash]) || null;
+}
+function annotateCustomers(db, rows) {
+  const who = custLookup(db, rows);
+  return rows.map((m) => { const o = txOut(m); o.customer = who(m); return o; });
+}
 app.get("/transactions", currentUser, staffOrAdmin, (req, res) => {
   const db = getDb();
   const limit = Math.min(2000, parseInt(req.query.limit, 10) || 500);
   if (req.user.role === "admin") {
     const uid = req.query.user_id ? Number(req.query.user_id) : null;
-    if (!uid) return res.json(db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit).map(txOut));
-    return res.json(relevantMovements(db, [uid], [uid], limit).map(txOut));
+    if (!uid) return res.json(annotateCustomers(db, db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit)));
+    return res.json(annotateCustomers(db, relevantMovements(db, [uid], [uid], limit)));
   }
   // staff: only their own activity + their assigned customers' deposits & payouts
   const custIds = assignedCustomerIds(req.user.id);
-  res.json(relevantMovements(db, custIds, [req.user.id], limit).map(txOut));
+  res.json(annotateCustomers(db, relevantMovements(db, custIds, [req.user.id], limit)));
 });
 
 // Analytics / reports summary (admin)
@@ -1362,6 +1386,7 @@ function startWorker() {
     try { const r = await svc.scanAndSweep(); if (r && r.length) console.log("[worker]", JSON.stringify(r)); }
     catch (e) { console.log("[worker] error:", e.message); }
     try { await svc.maybeAutoRefillGas(); } catch (e) { console.log("[worker] gas refill error:", e.message); }
+    try { await svc.reconcilePending(); } catch (e) { console.log("[worker] reconcile error:", e.message); }
     try {
       if (config.get().auto_distribute_enabled && Date.now() - lastDistribute > 10 * 60 * 1000) {
         lastDistribute = Date.now();

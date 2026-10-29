@@ -5,9 +5,13 @@
   "description": "Self-hosted custodial USDT (TRC-20) console with browser-based setup",
   "type": "commonjs",
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "db:export:mysql": "node tools/sql-export.js --dialect mysql --out kryvonwallet.mysql.sql",
+    "db:export:postgres": "node tools/sql-export.js --dialect postgres --out kryvonwallet.pg.sql"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^4.19.2",
     "better-sqlite3": "^11.3.0",

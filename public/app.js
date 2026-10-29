@@ -1380,12 +1380,13 @@ function txTable(rows, showWho){
     <td>${esc((m.created_at||"").replace("T"," ").slice(0,16))}</td>
     <td><span class="kind">${esc(KIND_LABEL[m.kind]||m.kind)}</span></td>
     <td>${addrHtml(m.from_address)}</td><td>${addrHtml(m.to_address)}</td>
+    <td>${m.customer?`<span class="role-pill">${esc(m.customer)}</span>`:"—"}</td>
     <td class="amt num">${fmtUsdt(m.amount)} ${esc(m.token)}${m.amount_usd!=null?`<div class="r-sub">$${fmtUsdt(m.amount_usd)}</div>`:""}</td>
     <td>${statusBadge(m.status)}</td>
     ${showWho?`<td>${esc(m.initiated_by_name||"—")}</td>`:""}
     <td class="row-actions"><button class="btn btn-ghost btn-sm" data-receipt="${m.id}">Receipt</button></td></tr>`).join("");
   return `<div class="panel"><div class="panel-head"><h2>History <span class="cnt">${(rows||[]).length}</span></h2></div>
-    <div class="panel-body flush">${body ? `<div class="tbl-wrap"><table><thead><tr><th>Date (UTC)</th><th>Type</th><th>From</th><th>To</th><th class="amt">Amount</th><th>Status</th>${showWho?"<th>By</th>":""}<th></th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState("No transactions.")}</div></div>`;
+    <div class="panel-body flush">${body ? `<div class="tbl-wrap"><table><thead><tr><th>Date (UTC)</th><th>Type</th><th>From</th><th>To</th><th>Customer</th><th class="amt">Amount</th><th>Status</th>${showWho?"<th>By</th>":""}<th></th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState("No transactions.")}</div></div>`;
 }
 
 /* ---------- address book (admin/staff) ---------- */

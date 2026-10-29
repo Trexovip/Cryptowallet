@@ -344,6 +344,32 @@ rules; anything above the limit waits for an admin. Keys can be revoked instantl
 **CSV export** (admin): download the full transaction ledger and audit log as CSV from the
 Transactions and Audit screens (`/transactions.csv`, `/audit.csv`) for accounting/compliance.
 
+## Using MySQL / PostgreSQL for data management
+
+The app itself runs on an embedded **SQLite** database (in the Docker volume) — reliable and
+zero-admin for a self-hosted node. To manage, report on, or centralize the data in **MySQL** or
+**PostgreSQL**, use the built-in export tool, which dumps the whole database as ready-to-import SQL:
+
+```bash
+# inside the container (or locally from the project root)
+node tools/sql-export.js --dialect mysql    --out kryvonwallet.mysql.sql
+node tools/sql-export.js --dialect postgres --out kryvonwallet.pg.sql
+# or:  npm run db:export:mysql   /   npm run db:export:postgres
+
+# then import into your server DB
+mysql -u USER -p DBNAME < kryvonwallet.mysql.sql
+psql "$DATABASE_URL" -f kryvonwallet.pg.sql
+```
+
+It reads the live schema (so it always matches, migrations included), maps types, preserves primary
+keys (AUTO_INCREMENT / BIGSERIAL), and escapes values. Re-run it any time to refresh the copy
+(it DROPs + recreates the tables). This is a one-way export for reporting/BI/reconciliation — the app
+keeps writing to SQLite.
+
+> Running the app *directly on* MySQL/Postgres at runtime is a larger change (the data layer is
+> synchronous SQLite; server DBs are async), done as a dedicated migration with a switchable adapter.
+> Ask if you want that.
+
 ## Data & reset
 - `data/config.json` — configuration + secrets (written `chmod 600`).
 - `data/custody.db` — the SQLite database.

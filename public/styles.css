@@ -352,3 +352,29 @@ tbody tr:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,transparen
 .tabbar button.active{color:var(--accent-ink);border-bottom-color:var(--accent)}
 .tab-pane{display:none}
 .tab-pane.active{display:block;animation:fade .15s ease}
+
+/* ---------- complete mobile friendliness ---------- */
+@media (max-width:860px){
+  .page-head{flex-direction:column;align-items:stretch !important}
+  .page-head > div:last-child{display:flex;flex-wrap:wrap;gap:8px}
+  .tabbar{overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch}
+  .tabbar button{white-space:nowrap;flex:0 0 auto}
+  .panel-body{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .panel-body table{min-width:540px}
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .form-actions{flex-wrap:wrap}
+  .form-actions .input{max-width:none;flex:1 1 140px}
+  .btn{min-height:42px}
+  .modal{max-width:94vw !important}
+  .rc{max-width:100%}
+  .row-actions{flex-wrap:wrap;justify-content:flex-start}
+}
+@media (max-width:520px){
+  .main{padding:16px 12px 72px}
+  .page-head h1{font-size:21px}
+  .readout .value{font-size:24px}
+  .readout .value.lead{font-size:27px}
+  .nav{position:sticky;top:0;z-index:15}
+  .nav a{padding:9px 11px;font-size:13px}
+  .modal-body{max-height:70vh;overflow:auto}
+}

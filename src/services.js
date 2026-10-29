@@ -235,6 +235,23 @@ async function ensurePoolFunded(need, usdRate = null) {
 
 // Check the on-chain receipt after broadcast and update the ledger + payout row to
 // confirmed/failed (leaves it pending if it can't confirm within the window).
+// Re-check any broadcast-but-still-pending payouts/movements and flip them to confirmed/failed.
+// Runs every worker cycle so a transaction that confirms AFTER the initial window isn't stuck pending.
+async function reconcilePending() {
+  const db = getDb();
+  const reqs = db.prepare("SELECT tx_hash FROM disbursement_requests WHERE status='pending' AND tx_hash IS NOT NULL").all();
+  const moves = db.prepare("SELECT tx_hash FROM movements WHERE status='pending' AND tx_hash IS NOT NULL").all();
+  const hashes = [...new Set([...reqs.map((r) => r.tx_hash), ...moves.map((m) => m.tx_hash)].filter(Boolean))];
+  for (const h of hashes) {
+    let st; try { st = await chain.confirmTx(h, { tries: 3, gapMs: 1500 }); } catch { st = "pending"; }
+    if (st === "pending") continue;
+    db.prepare("UPDATE disbursement_requests SET status=? WHERE tx_hash=? AND status='pending'").run(st, h);
+    db.prepare("UPDATE movements SET status=? WHERE tx_hash=? AND status='pending'").run(st, h);
+    if (st === "confirmed") { const r = db.prepare("SELECT * FROM disbursement_requests WHERE tx_hash=?").get(h); if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx: h, request_id: r.id }); }
+  }
+  return hashes.length;
+}
+
 function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
   Promise.resolve()
     .then(() => chain.confirmTx(tx))
@@ -394,5 +411,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
-  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending,
 };
