@@ -247,9 +247,14 @@ async function reconcileAddress(address) {
     if (exists) continue;
     const toW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.to);
     const fromW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.from);
-    let kind = "external", walletId = null;
-    if (toW) { kind = "deposit_in"; walletId = toW.id; }
-    else if (fromW) { kind = fromW.wtype === "treasury" ? "treasury_out" : "disburse_out"; walletId = fromW.id; }
+    // Only backfill transfers that cross between us and the outside world:
+    //  - a DEPOSIT   = incoming to one of OUR deposit wallets (from outside)
+    //  - a PAYOUT    = outgoing from OUR pool/treasury wallet (to outside)
+    // Skip internal transfers (both sides ours: funding, sweeps) and purely external ones.
+    let kind = null, walletId = null;
+    if (toW && !fromW && toW.wtype === "deposit") { kind = "deposit_in"; walletId = toW.id; }
+    else if (fromW && !toW) { kind = fromW.wtype === "treasury" ? "treasury_out" : "disburse_out"; walletId = fromW.id; }
+    else continue;
     await db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
       .run(kind, "tron", "USDT", tr.from, tr.to, String(tr.value), tr.txid, "confirmed", walletId, "reconciled from chain", tr.timestamp ? new Date(tr.timestamp).toISOString() : now());
     inserted++;
