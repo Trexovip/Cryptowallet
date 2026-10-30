@@ -437,9 +437,14 @@ app.post("/gas/refill", currentUser, adminRequired, wrap(async (req, res) => {
 // Reconcile against the chain (Tronscan/TronGrid): fetch an address's full USDT history and
 // insert any transfers missing from our ledger. With no address, scans all our wallets (admin).
 app.post("/reconcile", currentUser, adminRequired, wrap(async (req, res) => {
-  const address = (req.body && req.body.address || "").trim();
-  const r = address ? await svc.reconcileAddress(address) : await svc.reconcileAll();
-  svc.audit(req.user.id, "reconcile", `${address || "all wallets"} — scanned ${r.scanned}, inserted ${r.inserted}`, ip(req));
+  const b = req.body || {};
+  const address = (b.address || "").trim();
+  const mode = b.mode || (address ? "wallet" : "all");
+  let r;
+  if (!address || mode === "all") r = await svc.reconcileAll();
+  else if (mode === "payouts-to") r = await svc.reconcilePayoutsTo(address);
+  else r = await svc.reconcileWallet(address); // our deposit wallet or pool/treasury wallet
+  svc.audit(req.user.id, "reconcile", `${mode} ${address || "all wallets"} — scanned ${r.scanned}, inserted ${r.inserted}`, ip(req));
   res.json(r);
 }));
 

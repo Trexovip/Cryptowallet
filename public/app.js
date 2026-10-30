@@ -1372,10 +1372,11 @@ async function renderTransactions(){
     };
   }
   try{
-    let users = [], customers = [];
+    let users = [], customers = [], walletsList = [];
     if (isAdmin){
       users = await api("/users");
       try { customers = await api("/customers"); } catch(e){}
+      try { walletsList = await api("/wallets"); } catch(e){}
     }
     const qs = [];
     if (txAddr) qs.push("address=" + encodeURIComponent(txAddr));
@@ -1395,9 +1396,20 @@ async function renderTransactions(){
         <div class="field" style="margin:0"><label>To (date)</label><input id="txTo" type="date" class="input" value="${txTo}"></div>
       </div>
       <div class="form-actions" style="margin-top:10px"><button id="txApply" class="btn btn-ghost btn-sm">Apply dates</button><button id="txClear" class="btn btn-ghost btn-sm">Clear</button><span class="hint">All history is kept — pick any range, even a year back.</span></div>
-      <div class="field" style="margin-top:12px"><label>Search by wallet address (in/out, all wallets, no limit)</label>
+      <div class="field" style="margin-top:12px"><label>Search by address (ledger — in/out, all wallets, no limit)</label>
         <input id="txAddr" class="input mono" placeholder="T… (any of our wallets or an external address)" value="${esc(txAddr)}"></div>
-      <div class="form-actions"><button id="txAddrGo" class="btn btn-primary btn-sm">Search address</button><button id="txRecon" class="btn btn-ghost btn-sm">Reconcile from chain</button><span class="hint">Reconcile pulls the full on-chain history (Tronscan/TronGrid) and backfills any missing transactions.</span></div>
+      <div class="form-actions"><button id="txAddrGo" class="btn btn-primary btn-sm">Search address</button></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <div class="hint" style="margin-bottom:8px"><b>Reconcile from chain (Tronscan/TronGrid)</b> — pull on-chain history and backfill anything missing.</div>
+      <div class="field" style="margin:0"><label>Check payouts to an external address</label>
+        <input id="rcTo" class="input mono" placeholder="beneficiary T-address — saves only payouts sent from your pool/treasury"></div>
+      <div class="form-actions" style="margin-bottom:10px"><button id="rcToGo" class="btn btn-ghost btn-sm">Check & save payouts to this address</button></div>
+      <div class="field" style="margin:0"><label>Reconcile one of your wallets</label>
+        <select id="rcWallet" class="input">
+          <optgroup label="Deposit wallets (fetch incoming deposits)">${walletsList.filter(w=>w.wtype==="deposit").map(w=>`<option value="${esc(w.address)}">${esc(w.label||("deposit "+w.id))} — ${esc(w.address.slice(0,10))}…</option>`).join("")}</optgroup>
+          <optgroup label="Pool / treasury (fetch outgoing payouts)">${walletsList.filter(w=>w.wtype==="disbursement"||w.wtype==="treasury").map(w=>`<option value="${esc(w.address)}">${esc(w.wtype)} ${w.id} — ${esc(w.address.slice(0,10))}…</option>`).join("")}</optgroup>
+        </select></div>
+      <div class="form-actions"><button id="rcWalletGo" class="btn btn-ghost btn-sm">Reconcile selected wallet</button><button id="rcAll" class="btn btn-ghost btn-sm">Reconcile all wallets</button></div>
       </div></div>` : "";
     $("#txBody").innerHTML = filter + txTable(rows, isAdmin);
     if (isAdmin) {
@@ -1405,15 +1417,15 @@ async function renderTransactions(){
       const af = $("#txApply"); if (af) af.onclick = () => { txFrom = $("#txFrom").value || ""; txTo = $("#txTo").value || ""; renderTransactions(); };
       const cl = $("#txClear"); if (cl) cl.onclick = () => { txFrom = ""; txTo = ""; txAddr = ""; renderTransactions(); };
       const ag = $("#txAddrGo"); if (ag) ag.onclick = () => { txAddr = ($("#txAddr").value || "").trim(); txFilterUser = null; renderTransactions(); };
-      const rc = $("#txRecon"); if (rc) rc.onclick = async () => {
-        const addr = ($("#txAddr").value || "").trim();
-        const ok = await confirmModal({ title: "Reconcile from chain", okLabel: "Reconcile",
-          bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Fetch the full on-chain USDT history ${addr ? "for this address" : "for ALL your wallets"} and insert any transactions missing from the ledger. Safe to run repeatedly.</p>` });
-        if (!ok) return;
-        await withBusy(rc, "Reconciling…", async () => {
-          try { const r = await api("/reconcile", { method: "POST", body: { address: addr } }); toast(`Reconciled — scanned ${r.scanned}, added ${r.inserted}`); if (addr) txAddr = addr; renderTransactions(); }
-          catch (e) { toast(e.message, true); }
-        });
+      const runRecon = async (btn, body, label) => withBusy(btn, "Reconciling…", async () => {
+        try { const r = await api("/reconcile", { method: "POST", body }); toast(`${label} — scanned ${r.scanned}, added ${r.inserted}`); if (body.address) txAddr = body.address; renderTransactions(); }
+        catch (e) { toast(e.message, true); }
+      });
+      const rt = $("#rcToGo"); if (rt) rt.onclick = () => { const a = ($("#rcTo").value || "").trim(); if (!a) return toast("Enter an address", true); runRecon(rt, { mode: "payouts-to", address: a }, "Payouts check"); };
+      const rw = $("#rcWalletGo"); if (rw) rw.onclick = () => { const a = $("#rcWallet").value; if (!a) return toast("No wallet selected", true); runRecon(rw, { mode: "wallet", address: a }, "Wallet reconcile"); };
+      const rall = $("#rcAll"); if (rall) rall.onclick = async () => {
+        const ok = await confirmModal({ title: "Reconcile all wallets", okLabel: "Reconcile all", bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Pull on-chain history for every wallet (deposits for deposit wallets, payouts for pool/treasury) and backfill anything missing. Safe to run repeatedly.</p>` });
+        if (ok) runRecon(rall, { mode: "all" }, "Reconcile all");
       };
     }
   }catch(e){ $("#txBody").innerHTML = emptyState(e.message); }

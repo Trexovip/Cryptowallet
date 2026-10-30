@@ -236,37 +236,58 @@ async function ensurePoolFunded(need, usdRate = null) {
 
 // Check the on-chain receipt after broadcast and update the ledger + payout row to
 // confirmed/failed (leaves it pending if it can't confirm within the window).
-// Pull an address's full on-chain USDT history (TronGrid/Tronscan) and insert any transfer
-// that's missing from our ledger. Classifies by our wallets (deposit_in / disburse_out / treasury_out).
-async function reconcileAddress(address) {
+// Insert one on-chain transfer into the ledger if it isn't already recorded. Returns true if inserted.
+async function _insertTransfer(db, tr, kind, walletId) {
+  const exists = await db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND from_address IS ? AND to_address IS ?").get(tr.txid, tr.from, tr.to);
+  if (exists) return false;
+  await db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+    .run(kind, "tron", "USDT", tr.from, tr.to, String(tr.value), tr.txid, "confirmed", walletId, "reconciled from chain", tr.timestamp ? new Date(tr.timestamp).toISOString() : now());
+  return true;
+}
+
+// MODE "payouts-to": given an EXTERNAL beneficiary address, find and save only the payouts WE sent to it
+// from our pool/treasury wallets. Does NOT touch deposits or that address's unrelated history.
+async function reconcilePayoutsTo(address) {
   const db = getDb();
+  const ours = new Map((await db.prepare("SELECT id,address,wtype FROM wallets").all()).map((w) => [w.address, w]));
   const transfers = await chain.listTrc20Transfers(address, 5000);
   let scanned = transfers.length, inserted = 0;
   for (const tr of transfers) {
-    const exists = await db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND from_address IS ? AND to_address IS ?").get(tr.txid, tr.from, tr.to);
-    if (exists) continue;
-    const toW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.to);
-    const fromW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.from);
-    // Only backfill transfers that cross between us and the outside world:
-    //  - a DEPOSIT   = incoming to one of OUR deposit wallets (from outside)
-    //  - a PAYOUT    = outgoing from OUR pool/treasury wallet (to outside)
-    // Skip internal transfers (both sides ours: funding, sweeps) and purely external ones.
-    let kind = null, walletId = null;
-    if (toW && !fromW && toW.wtype === "deposit") { kind = "deposit_in"; walletId = toW.id; }
-    else if (fromW && !toW) { kind = fromW.wtype === "treasury" ? "treasury_out" : "disburse_out"; walletId = fromW.id; }
-    else continue;
-    await db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-      .run(kind, "tron", "USDT", tr.from, tr.to, String(tr.value), tr.txid, "confirmed", walletId, "reconciled from chain", tr.timestamp ? new Date(tr.timestamp).toISOString() : now());
-    inserted++;
+    if (tr.to !== address) continue;                 // only transfers that landed ON this address
+    const fromW = ours.get(tr.from);                 // ...and were sent FROM one of our wallets
+    if (!fromW || (fromW.wtype !== "disbursement" && fromW.wtype !== "treasury")) continue;
+    if (await _insertTransfer(db, tr, fromW.wtype === "treasury" ? "treasury_out" : "disburse_out", fromW.id)) inserted++;
   }
-  return { address, scanned, inserted };
+  return { mode: "payouts-to", address, scanned, inserted };
 }
-// Reconcile every one of our active wallets against the chain.
+
+// MODE "wallet": reconcile ONE of OUR wallets in its natural direction.
+//  - deposit wallet  -> save all INCOMING deposits to it
+//  - pool/treasury   -> save all OUTGOING payouts from it
+async function reconcileWallet(address) {
+  const db = getDb();
+  const w = await db.prepare("SELECT id,address,wtype FROM wallets WHERE address=?").get(address);
+  if (!w) throw new Error("that address is not one of your wallets — use 'check payouts to address' for an external address");
+  const transfers = await chain.listTrc20Transfers(address, 5000);
+  let scanned = transfers.length, inserted = 0;
+  for (const tr of transfers) {
+    if (w.wtype === "deposit") {
+      if (tr.to !== address) continue;               // incoming only
+      if (await _insertTransfer(db, tr, "deposit_in", w.id)) inserted++;
+    } else {
+      if (tr.from !== address) continue;             // outgoing only
+      if (await _insertTransfer(db, tr, w.wtype === "treasury" ? "treasury_out" : "disburse_out", w.id)) inserted++;
+    }
+  }
+  return { mode: "wallet", address, wtype: w.wtype, scanned, inserted };
+}
+
+// Reconcile every one of our active wallets in its natural direction.
 async function reconcileAll() {
   const ws = await getDb().prepare("SELECT address FROM wallets WHERE is_active=1").all();
   let scanned = 0, inserted = 0;
-  for (const w of ws) { const r = await reconcileAddress(w.address); scanned += r.scanned; inserted += r.inserted; }
-  return { wallets: ws.length, scanned, inserted };
+  for (const w of ws) { const r = await reconcileWallet(w.address); scanned += r.scanned; inserted += r.inserted; }
+  return { mode: "all", wallets: ws.length, scanned, inserted };
 }
 
 // Re-check any broadcast-but-still-pending payouts/movements and flip them to confirmed/failed.
@@ -449,5 +470,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
-  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending, reconcileAddress, reconcileAll,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending, reconcilePayoutsTo, reconcileWallet, reconcileAll,
 };
