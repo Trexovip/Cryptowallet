@@ -140,6 +140,23 @@ async function swapUsdtToTrx(fromPrivKey, usdtAmount, toAddress, slippagePct = 5
   return { tx: txid, trxOut: out / 1e6 };
 }
 
+// Full TRC-20 (USDT) transfer history for an address — both incoming and outgoing — from TronGrid.
+async function listTrc20Transfers(address, max = 2000) {
+  const c = get();
+  const headers = c.trongrid_api_key ? { "TRON-PRO-API-KEY": c.trongrid_api_key } : {};
+  let url = `${hostFor(c.tron_network)}/v1/accounts/${address}/transactions/trc20?limit=200&contract_address=${c.usdt_contract}`;
+  const out = [];
+  for (let page = 0; page < 100 && out.length < max; page++) {
+    let j; try { j = await (await fetch(url, { headers })).json(); } catch { break; }
+    const rows = (j && j.data) || [];
+    for (const t of rows) out.push({ from: t.from, to: t.to, txid: t.transaction_id, value: Number(t.value) / 10 ** USDT_DECIMALS, timestamp: t.block_timestamp || null });
+    const next = j && j.meta && j.meta.links && j.meta.links.next;
+    if (!next || !rows.length) break;
+    url = next;
+  }
+  return out.slice(0, max);
+}
+
 // ---- Energy (Stake 2.0) ----
 async function accountResources(address) {
   const r = await base().trx.getAccountResources(address);
@@ -200,7 +217,7 @@ async function signMessage(privHex, message) {
 }
 
 // Route every network-touching function through the global throttle/queue.
-const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, listTrc20Transfers, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
 const _throttled = {};
 for (const [k, f] of Object.entries(_networkFns)) _throttled[k] = (...args) => limit(() => f(...args));
 // newWallet / addressFromPrivateKey / signMessage are local (no network) — left unthrottled.

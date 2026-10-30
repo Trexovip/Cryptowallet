@@ -136,3 +136,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip VARCHAR(64) DEFAULT '',
   created_at VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS billing_usage (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  event VARCHAR(30) NOT NULL,
+  ref VARCHAR(128),
+  amount VARCHAR(40),
+  period VARCHAR(10) NOT NULL,
+  reported TINYINT NOT NULL DEFAULT 0,
+  created_at VARCHAR(40) NOT NULL,
+  INDEX idx_bu_period (period),
+  INDEX idx_bu_reported (reported)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

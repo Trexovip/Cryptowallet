@@ -1338,7 +1338,7 @@ function showApiKeyOnce(key, scopes){
 }
 
 /* ---------- transactions (admin: all + filter by user; staff: own) ---------- */
-let txFilterUser = null;
+let txFilterUser = null, txFrom = "", txTo = "", txAddr = "";
 function openUserTx(id){ txFilterUser = String(id); route("transactions"); }
 async function renderTransactions(){
   const sec = $("#sec-transactions");
@@ -1377,15 +1377,45 @@ async function renderTransactions(){
       users = await api("/users");
       try { customers = await api("/customers"); } catch(e){}
     }
-    const rows = await api("/transactions" + (txFilterUser ? "?user_id=" + encodeURIComponent(txFilterUser) : ""));
+    const qs = [];
+    if (txAddr) qs.push("address=" + encodeURIComponent(txAddr));
+    else if (txFilterUser) qs.push("user_id=" + encodeURIComponent(txFilterUser));
+    if (txFrom) qs.push("from=" + txFrom);
+    if (txTo) qs.push("to=" + txTo);
+    qs.push(txAddr ? "limit=all" : "limit=2000");
+    const rows = await api("/transactions" + (qs.length ? "?" + qs.join("&") : ""));
     const filter = isAdmin ? `<div class="panel"><div class="panel-body"><div class="field" style="margin:0">
       <label>Filter by user</label>
       <select id="txUser" class="input"><option value="">Everyone</option>
         <optgroup label="Staff / admin">${users.map(u => `<option value="${u.id}"${String(txFilterUser)===String(u.id)?" selected":""}>${esc(u.username)} (${esc(u.role)})</option>`).join("")}</optgroup>
         ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="${c.id}"${String(txFilterUser)===String(c.id)?" selected":""}>${esc(c.username)} (${esc(c.customer_type)})</option>`).join("")}</optgroup>` : ""}
-      </select></div></div></div>` : "";
+      </select></div>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field" style="margin:0"><label>From (date)</label><input id="txFrom" type="date" class="input" value="${txFrom}"></div>
+        <div class="field" style="margin:0"><label>To (date)</label><input id="txTo" type="date" class="input" value="${txTo}"></div>
+      </div>
+      <div class="form-actions" style="margin-top:10px"><button id="txApply" class="btn btn-ghost btn-sm">Apply dates</button><button id="txClear" class="btn btn-ghost btn-sm">Clear</button><span class="hint">All history is kept — pick any range, even a year back.</span></div>
+      <div class="field" style="margin-top:12px"><label>Search by wallet address (in/out, all wallets, no limit)</label>
+        <input id="txAddr" class="input mono" placeholder="T… (any of our wallets or an external address)" value="${esc(txAddr)}"></div>
+      <div class="form-actions"><button id="txAddrGo" class="btn btn-primary btn-sm">Search address</button><button id="txRecon" class="btn btn-ghost btn-sm">Reconcile from chain</button><span class="hint">Reconcile pulls the full on-chain history (Tronscan/TronGrid) and backfills any missing transactions.</span></div>
+      </div></div>` : "";
     $("#txBody").innerHTML = filter + txTable(rows, isAdmin);
-    if (isAdmin) $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; renderTransactions(); };
+    if (isAdmin) {
+      $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; renderTransactions(); };
+      const af = $("#txApply"); if (af) af.onclick = () => { txFrom = $("#txFrom").value || ""; txTo = $("#txTo").value || ""; renderTransactions(); };
+      const cl = $("#txClear"); if (cl) cl.onclick = () => { txFrom = ""; txTo = ""; txAddr = ""; renderTransactions(); };
+      const ag = $("#txAddrGo"); if (ag) ag.onclick = () => { txAddr = ($("#txAddr").value || "").trim(); txFilterUser = null; renderTransactions(); };
+      const rc = $("#txRecon"); if (rc) rc.onclick = async () => {
+        const addr = ($("#txAddr").value || "").trim();
+        const ok = await confirmModal({ title: "Reconcile from chain", okLabel: "Reconcile",
+          bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Fetch the full on-chain USDT history ${addr ? "for this address" : "for ALL your wallets"} and insert any transactions missing from the ledger. Safe to run repeatedly.</p>` });
+        if (!ok) return;
+        await withBusy(rc, "Reconciling…", async () => {
+          try { const r = await api("/reconcile", { method: "POST", body: { address: addr } }); toast(`Reconciled — scanned ${r.scanned}, added ${r.inserted}`); if (addr) txAddr = addr; renderTransactions(); }
+          catch (e) { toast(e.message, true); }
+        });
+      };
+    }
   }catch(e){ $("#txBody").innerHTML = emptyState(e.message); }
 }
 function txTable(rows, showWho){
@@ -1547,6 +1577,9 @@ async function renderSettings(){
       <div class="field"><label>Database engine</label><div><span class="role-pill">${esc((c.db_engine || "sqlite").toUpperCase())}</span> <span class="hint">${c.db_engine === "mysql" ? "MySQL / MariaDB" : "embedded SQLite"}</span></div></div>
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
+    <div class="panel"><div class="panel-head"><h2>License</h2></div><div class="panel-body">
+      <div id="licBox" class="hint">Loading license…</div>
+    </div></div>
     </div>
     <button class="btn btn-primary" id="cfgSave" style="margin-top:16px">Save settings</button>`;
     $("#cfgSave").onclick = () => {
@@ -1609,6 +1642,21 @@ async function renderSettings(){
       } catch (e) { $("#enStatus").textContent = e.message; }
     }
     loadEnergy();
+    (async () => {
+      const box = $("#licBox"); if (!box) return;
+      try {
+        const l = await api("/license");
+        const badge = l.licensed ? (l.in_grace ? "IN GRACE" : "LICENSED") : "UNLICENSED";
+        const quota = l.included_transactions != null ? `${l.usage.month} / ${l.included_transactions} this month` : `${l.usage.month} this month (metered)`;
+        box.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px">
+          <div><b>${esc(l.licensee || "—")}</b> <span class="role-pill">${badge}</span> ${l.plan ? `· ${esc(l.plan)}` : ""}</div>
+          <div>Billing: ${esc(l.billing || "—")} · Transactions: <b>${quota}</b> · Lifetime: ${l.usage.total}</div>
+          ${l.expires_at ? `<div>Expires: ${esc(l.expires_at.slice(0, 10))}${l.in_grace ? " (in grace period)" : ""}</div>` : ""}
+          ${!l.licensed ? `<div style="color:var(--danger)">${esc(l.reason || "license invalid")} — contact your vendor</div>` : ""}
+          <div class="hint">Install via the <code>LICENSE_KEY</code> env var or <code>data/license.key</code>, then restart. Enforcement is on when <code>LICENSE_ENFORCE=1</code>.</div>
+        </div>`;
+      } catch (e) { box.textContent = "License status unavailable."; }
+    })();
     $("#enStake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to stake", true); act(() => api("/energy/stake", { method: "POST", body: { trx } }), "Staked for energy", loadEnergy); };
     $("#enUnstake").onclick = () => { const trx = parseFloat($("#enStakeAmt").value); if (!(trx > 0)) return toast("Enter TRX to unstake", true); act(() => api("/energy/unstake", { method: "POST", body: { trx } }), "Unstake requested", loadEnergy); };
     const sn = $("#swapNow");

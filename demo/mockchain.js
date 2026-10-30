@@ -7,6 +7,7 @@ let TronWeb;
 const tw = new TronWeb({ fullHost: "https://nile.trongrid.io" });
 
 const usdt = {};       // address -> USDT balance
+const _transfers = [];  // on-chain TRC-20 transfer log (for reconciliation tests)
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
@@ -23,6 +24,7 @@ module.exports = {
   async usdtBalance(addr) { return usdt[addr] || 0; },
   async nativeBalance(addr) { return trx[addr] || 0; },
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
+  async listTrc20Transfers(addr) { return _transfers.filter((x) => x.from === addr || x.to === addr); },
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
   async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },
@@ -44,7 +46,8 @@ module.exports = {
     const from = addrFromPk(pk); amount = Number(amount);
     if (_failNext) { _failNext = false; const id = txid(); _failTx[id] = true; return id; } // simulate on-chain revert (no funds move)
     if ((usdt[from] || 0) + 1e-9 < amount) throw new Error("insufficient USDT (demo)");
-    usdt[from] = (usdt[from] || 0) - amount; usdt[to] = (usdt[to] || 0) + amount; return txid();
+    usdt[from] = (usdt[from] || 0) - amount; usdt[to] = (usdt[to] || 0) + amount;
+    const id = txid(); _transfers.push({ from, to, txid: id, value: amount, timestamp: Date.now() }); return id;
   },
   async sendNative(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);
@@ -53,9 +56,9 @@ module.exports = {
   // demo helpers (not part of the real adapter)
   __seedUsdt(addr, amt, from) {
     usdt[addr] = (usdt[addr] || 0) + amt;
-    (incoming[addr] = incoming[addr] || []).push({
-      from: from || randAddr(), to: addr, txid: txid(), amount: amt, ts: new Date().toISOString(),
-    });
+    const _id = txid(); const _from = from || randAddr();
+    (incoming[addr] = incoming[addr] || []).push({ from: _from, to: addr, txid: _id, amount: amt, ts: new Date().toISOString() });
+    _transfers.push({ from: _from, to: addr, txid: _id, value: amt, timestamp: Date.now() });
   },
   __seedTrx(addr, amt) { trx[addr] = (trx[addr] || 0) + amt; },
   __failNextSend(v = true) { _failNext = v; },

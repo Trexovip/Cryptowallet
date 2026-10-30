@@ -346,6 +346,43 @@ Transactions and Audit screens (`/transactions.csv`, `/audit.csv`) for accountin
 
 .. _mysql-runtime:
 
+## Transaction history, address search & on-chain reconciliation
+
+- **No row cap:** the Transactions API accepts `limit=all` (or `limit=0`) to return the full history;
+  the UI uses it for address searches. Date range (`from`/`to`) and `before` (id cursor) also work.
+- **Search by wallet address:** `GET /transactions?address=T...` returns every movement in or out of
+  that address across **all** wallets (pool, treasury, deposit) — and any external destination.
+- **Reconcile from chain (Tronscan/TronGrid):** `POST /reconcile {address?}` pulls an address's full
+  on-chain USDT transfer history and **inserts any transaction missing from the ledger** (classified as
+  deposit / payout / treasury-out by matching your wallets). With no address it scans **all** your
+  wallets. Idempotent — safe to run repeatedly. In the UI: Transactions → "Reconcile from chain".
+  (Set a TronGrid API key in Settings for reliable history pulls.)
+
+## Licensing & per-transaction billing (SaaS, self-hosted)
+
+Deploy the app on a customer's server and bill per transaction, gated by a signed license.
+
+- **How it works:** you mint an **Ed25519-signed license token** with `license-server/` (your private key).
+  The app ships with your **public key** and verifies the token locally — customers can't forge or
+  extend a license. Each payout is **metered** and reported to your license server for invoicing.
+- **Install on the customer:** set `LICENSE_KEY=<token>` (or drop the token in `data/license.key`) and
+  run with `LICENSE_ENFORCE=1`. **Settings → Security → License** shows status, plan, expiry, and
+  transactions used this month.
+- **Billing models:**
+  - **prepaid** — `included_transactions` per month; payouts are **blocked** once the quota is hit
+    until you re-issue/top-up.
+  - **postpaid** — unlimited; invoice by the reported transaction count × `price_per_txn`.
+- **Enforcement:** with `LICENSE_ENFORCE=1`, an expired (past grace) or invalid license, or an
+  exhausted prepaid quota, blocks new payouts with a clear "contact your vendor" message. Metering
+  always runs so usage is captured even before enforcement is turned on.
+- **Your side:** run `license-server/` on your own infra (it issues licenses and ingests usage —
+  `license-server/README.md` has the commands). **Never ship `license-server/` or its private key to
+  customers** (it's excluded from the Docker image via `.dockerignore`).
+
+> Note: software running on a customer's own machine can ultimately be patched by a determined
+> operator. The signed license prevents forged upgrades/renewals and the usage reporting gives you
+> accurate billing; combine with contracts and gating updates/support on a valid license.
+
 ## Running on MySQL / MariaDB (or SQLite)
 
 The app runs on either **SQLite** (default, embedded, zero-config) or **MySQL/MariaDB**, chosen at

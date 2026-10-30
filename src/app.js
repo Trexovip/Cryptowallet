@@ -5,6 +5,7 @@ const config = require("./config");
 const { getDb, dialect } = require("./db");
 const sec = require("./security");
 const svc = require("./services");
+const license = require("./license");
 
 const app = express();
 app.set("trust proxy", true);
@@ -430,6 +431,15 @@ app.post("/gas/refill", currentUser, adminRequired, wrap(async (req, res) => {
   if (!(usdt > 0)) return res.status(400).json({ detail: "usdt amount must be greater than 0" });
   const r = await svc.swapToGas(usdt);
   svc.audit(req.user.id, "gas_swap", `${usdt} USDT -> ${r.trxOut || "?"} TRX to gas`, ip(req));
+  res.json(r);
+}));
+
+// Reconcile against the chain (Tronscan/TronGrid): fetch an address's full USDT history and
+// insert any transfers missing from our ledger. With no address, scans all our wallets (admin).
+app.post("/reconcile", currentUser, adminRequired, wrap(async (req, res) => {
+  const address = (req.body && req.body.address || "").trim();
+  const r = address ? await svc.reconcileAddress(address) : await svc.reconcileAll();
+  svc.audit(req.user.id, "reconcile", `${address || "all wallets"} — scanned ${r.scanned}, inserted ${r.inserted}`, ip(req));
   res.json(r);
 }));
 
@@ -1145,7 +1155,7 @@ app.get("/movements", currentUser, async (req, res) => {
 
 // Transaction history. Admin: all, or ?user_id= to scope to one user. Staff: own only.
 // Movements relevant to one user id: initiated by them, deposits on their wallets, or payouts tied to them.
-async function relevantMovements(db, ownerIds, extraInitiators, limit) {
+async function relevantMovements(db, ownerIds, extraInitiators, limit, opts = {}) {
   const walletIds = ownerIds.length ? (await db.prepare(`SELECT id FROM wallets WHERE owner_user_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds)).map((w) => w.id) : [];
   const txs = ownerIds.length ? (await db.prepare(`SELECT tx_hash FROM disbursement_requests WHERE tx_hash IS NOT NULL AND customer_id IN (${ownerIds.map(() => "?").join(",")})`).all(...ownerIds)).map((r) => r.tx_hash) : [];
   // the customer's own addresses: their deposit wallet(s) + whitelisted payout address(es)
@@ -1160,7 +1170,13 @@ async function relevantMovements(db, ownerIds, extraInitiators, limit) {
   if (txs.length) { clauses.push(`tx_hash IN (${txs.map(() => "?").join(",")})`); params.push(...txs); }
   if (addrs.length) { const ph = addrs.map(() => "?").join(","); clauses.push(`(to_address IN (${ph}) AND kind IN ('deposit_in','disburse_out','treasury_out'))`); params.push(...addrs); }
   if (!clauses.length) return [];
-  return (await db.prepare(`SELECT * FROM movements WHERE ${clauses.join(" OR ")} ORDER BY id DESC LIMIT ?`).all(...params, limit));
+  let where = `(${clauses.join(" OR ")})`;
+  if (opts.from) { where += " AND substr(created_at,1,10) >= ?"; params.push(opts.from); }
+  if (opts.to) { where += " AND substr(created_at,1,10) <= ?"; params.push(opts.to); }
+  if (opts.before) { where += " AND id < ?"; params.push(opts.before); }
+  const lim = limit != null ? " LIMIT ?" : "";
+  const args = limit != null ? [...params, limit] : params;
+  return (await db.prepare(`SELECT * FROM movements WHERE ${where} ORDER BY id DESC${lim}`).all(...args));
 }
 // Full backup: customers (with whitelist + staff links + password hash), staff, wallets, transactions.
 app.get("/backup/export", currentUser, adminRequired, async (req, res) => {
@@ -1279,15 +1295,38 @@ async function annotateCustomers(db, rows) {
 }
 app.get("/transactions", currentUser, staffOrAdmin, async (req, res) => {
   const db = getDb();
-  const limit = Math.min(2000, parseInt(req.query.limit, 10) || 500);
+  const noLimit = req.query.limit === "all" || parseInt(req.query.limit, 10) === 0;
+  const limit = noLimit ? null : Math.min(100000, parseInt(req.query.limit, 10) || 500);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : null;
+  const before = parseInt(req.query.before, 10) || null;
+  const address = (req.query.address || "").trim() || null;
+  const opts = { from, to, before };
   if (req.user.role === "admin") {
+    // search by wallet address — across ALL wallets, in/out, no row cap
+    if (address) {
+      const w = ["(from_address=? OR to_address=?)"]; const p = [address, address];
+      if (from) { w.push("substr(created_at,1,10) >= ?"); p.push(from); }
+      if (to) { w.push("substr(created_at,1,10) <= ?"); p.push(to); }
+      if (before) { w.push("id < ?"); p.push(before); }
+      const sql = `SELECT * FROM movements WHERE ${w.join(" AND ")} ORDER BY id DESC${noLimit ? "" : " LIMIT ?"}`;
+      return res.json(await annotateCustomers(db, (await db.prepare(sql).all(...(noLimit ? p : [...p, limit])))));
+    }
     const uid = req.query.user_id ? Number(req.query.user_id) : null;
-    if (!uid) return res.json(await annotateCustomers(db, (await db.prepare("SELECT * FROM movements ORDER BY id DESC LIMIT ?").all(limit))));
-    return res.json(await annotateCustomers(db, await relevantMovements(db, [uid], [uid], limit)));
+    if (!uid) {
+      const w = []; const p = [];
+      if (from) { w.push("substr(created_at,1,10) >= ?"); p.push(from); }
+      if (to) { w.push("substr(created_at,1,10) <= ?"); p.push(to); }
+      if (before) { w.push("id < ?"); p.push(before); }
+      const where = w.length ? "WHERE " + w.join(" AND ") : "";
+      const sql = `SELECT * FROM movements ${where} ORDER BY id DESC${noLimit ? "" : " LIMIT ?"}`;
+      return res.json(await annotateCustomers(db, (await db.prepare(sql).all(...(noLimit ? p : [...p, limit])))));
+    }
+    return res.json(await annotateCustomers(db, await relevantMovements(db, [uid], [uid], limit, opts)));
   }
   // staff: only their own activity + their assigned customers' deposits & payouts
   const custIds = await assignedCustomerIds(req.user.id);
-  res.json(await annotateCustomers(db, await relevantMovements(db, custIds, [req.user.id], limit)));
+  res.json(await annotateCustomers(db, await relevantMovements(db, custIds, [req.user.id], limit, opts)));
 });
 
 // Analytics / reports summary (admin)
@@ -1358,6 +1397,7 @@ app.get("/audit", currentUser, adminRequired, async (req, res) => {
 });
 
 // ---------------- dashboard ----------------
+app.get("/license", currentUser, adminRequired, wrap(async (_req, res) => { res.json({ ...license.status(), usage: await license.usageSummary() }); }));
 app.get("/dashboard", currentUser, wrap(async (req, res) => {
   const chain = require("./chain");
   const db = getDb();
@@ -1425,6 +1465,7 @@ function startWorker() {
     catch (e) { console.log("[worker] error:", e.message); }
     try { await svc.maybeAutoRefillGas(); } catch (e) { console.log("[worker] gas refill error:", e.message); }
     try { await svc.reconcilePending(); } catch (e) { console.log("[worker] reconcile error:", e.message); }
+    try { await license.reportUsage(); } catch (e) { /* best-effort */ }
     try {
       if (config.get().auto_distribute_enabled && Date.now() - lastDistribute > 10 * 60 * 1000) {
         lastDistribute = Date.now();

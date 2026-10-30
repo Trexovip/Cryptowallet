@@ -6,6 +6,7 @@ const chain = require("./chain");
 const sec = require("./security");
 const { get, save } = require("./config");
 const { getUsdRate } = require("./price");
+const license = require("./license");
 
 const now = () => new Date().toISOString();
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
@@ -235,6 +236,34 @@ async function ensurePoolFunded(need, usdRate = null) {
 
 // Check the on-chain receipt after broadcast and update the ledger + payout row to
 // confirmed/failed (leaves it pending if it can't confirm within the window).
+// Pull an address's full on-chain USDT history (TronGrid/Tronscan) and insert any transfer
+// that's missing from our ledger. Classifies by our wallets (deposit_in / disburse_out / treasury_out).
+async function reconcileAddress(address) {
+  const db = getDb();
+  const transfers = await chain.listTrc20Transfers(address, 5000);
+  let scanned = transfers.length, inserted = 0;
+  for (const tr of transfers) {
+    const exists = await db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND from_address IS ? AND to_address IS ?").get(tr.txid, tr.from, tr.to);
+    if (exists) continue;
+    const toW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.to);
+    const fromW = await db.prepare("SELECT id,wtype FROM wallets WHERE address=?").get(tr.from);
+    let kind = "external", walletId = null;
+    if (toW) { kind = "deposit_in"; walletId = toW.id; }
+    else if (fromW) { kind = fromW.wtype === "treasury" ? "treasury_out" : "disburse_out"; walletId = fromW.id; }
+    await db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+      .run(kind, "tron", "USDT", tr.from, tr.to, String(tr.value), tr.txid, "confirmed", walletId, "reconciled from chain", tr.timestamp ? new Date(tr.timestamp).toISOString() : now());
+    inserted++;
+  }
+  return { address, scanned, inserted };
+}
+// Reconcile every one of our active wallets against the chain.
+async function reconcileAll() {
+  const ws = await getDb().prepare("SELECT address FROM wallets WHERE is_active=1").all();
+  let scanned = 0, inserted = 0;
+  for (const w of ws) { const r = await reconcileAddress(w.address); scanned += r.scanned; inserted += r.inserted; }
+  return { wallets: ws.length, scanned, inserted };
+}
+
 // Re-check any broadcast-but-still-pending payouts/movements and flip them to confirmed/failed.
 // Runs every worker cycle so a transaction that confirms AFTER the initial window isn't stuck pending.
 async function reconcilePending() {
@@ -280,7 +309,9 @@ async function executeDisbursement(req, approverId, cap = null) {
   const wallet = await ensurePoolFunded(amount, rate);
   await ensureGas(wallet);
   const pk = sec.decryptSecret(wallet.enc_privkey);
+  await license.assertPayoutAllowed();
   const tx = await chain.sendUsdt(pk, req.to_address, amount);
+  await license.recordUsage("payout", tx, amount);
   // Return immediately after broadcast (status "pending") so the UI is fast; the on-chain
   // receipt is checked in the background and the row flips to confirmed/failed when known.
   const moveId = await record("disburse_out", wallet.address, req.to_address, amount, tx,
@@ -331,7 +362,9 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   const rate = await getUsdRate();
   await ensureGas(sourceWallet);
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
+  await license.assertPayoutAllowed();
   const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
+  await license.recordUsage("payout", tx, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
   const moveId = await record(kind, sourceWallet.address, toAddress, Number(amount), tx,
     { walletId: sourceWallet.id, status: "pending", note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
@@ -411,5 +444,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
-  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending, reconcileAddress, reconcileAll,
 };

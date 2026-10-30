@@ -1,0 +1,8 @@
+{
+  "name": "kryvonwallet-license-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Vendor-side license + per-transaction billing server (keep off customer machines)",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "express": "^4.19.2", "better-sqlite3": "^11.3.0" }
+}
