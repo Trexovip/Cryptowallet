@@ -1,0 +1,10 @@
+# Railway deploy config. Railway auto-detects the Dockerfile; this just adds a
+# health check and restart policy.
+[build]
+builder = "dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 120
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

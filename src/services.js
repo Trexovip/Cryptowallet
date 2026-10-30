@@ -10,16 +10,16 @@ const { getUsdRate } = require("./price");
 const now = () => new Date().toISOString();
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
-function audit(userId, action, detail = "", ip = "") {
-  getDb().prepare("INSERT INTO audit_log(user_id,action,detail,ip,created_at) VALUES(?,?,?,?,?)")
-    .run(userId, action, detail, ip, now());
+async function audit(userId, action, detail = "", ip = "") {
+  (await getDb().prepare("INSERT INTO audit_log(user_id,action,detail,ip,created_at) VALUES(?,?,?,?,?)")
+    .run(userId, action, detail, ip, now()));
 }
-function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "confirmed", note = "", token = "USDT", usdRate = null } = {}) {
-  return getDb().prepare(
+async function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "confirmed", note = "", token = "USDT", usdRate = null } = {}) {
+  return (await getDb().prepare(
     `INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at)
      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(kind, "tron", token, from, to, String(amount), tx, status, walletId, userId, note,
-        usdRate == null ? null : String(usdRate), now()).lastInsertRowid;
+        usdRate == null ? null : String(usdRate), now())).lastInsertRowid;
 }
 
 function fireWebhook(event, data) {
@@ -33,11 +33,11 @@ async function importWallet(privHex, wtype, ownerUserId = null, label = "", prel
   const clean = String(privHex).replace(/^0x/, "").trim();
   const address = chain.addressFromPrivateKey(clean);
   if (!address) throw new Error("invalid private key");
-  if (getDb().prepare("SELECT 1 FROM wallets WHERE address=?").get(address)) throw new Error("that wallet already exists");
-  const info = getDb().prepare(
+  if ((await getDb().prepare("SELECT 1 FROM wallets WHERE address=?").get(address))) throw new Error("that wallet already exists");
+  const info = (await getDb().prepare(
     `INSERT INTO wallets(chain,address,enc_privkey,wtype,label,owner_user_id,is_active,created_at) VALUES('tron',?,?,?,?,?,1,?)`
-  ).run(address, sec.encryptSecret(clean), wtype, label, ownerUserId, now());
-  const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  ).run(address, sec.encryptSecret(clean), wtype, label, ownerUserId, now()));
+  const wallet = (await getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid));
   if (preload) await preloadGas(wallet);
   return wallet;
 }
@@ -49,7 +49,7 @@ async function preloadGas(wallet) {
   try {
     const amt = Number(get().wallet_preload_trx != null ? get().wallet_preload_trx : 20);
     if (!(amt > 0) || !wallet || wallet.wtype === "fee") return;
-    const fee = getFee();
+    const fee = await getFee();
     if (!fee) return;
     let have = 0; try { have = await chain.nativeBalance(wallet.address); } catch { have = 0; }
     if (have >= amt) return;
@@ -57,17 +57,17 @@ async function preloadGas(wallet) {
     if (feeBal < amt) return;
     const feePk = sec.decryptSecret(fee.enc_privkey);
     const tx = await chain.sendNative(feePk, wallet.address, amt);
-    record("gas_fund", fee.address, wallet.address, amt, tx, { walletId: wallet.id, note: "pre-load on creation", token: "TRX" });
+    await record("gas_fund", fee.address, wallet.address, amt, tx, { walletId: wallet.id, note: "pre-load on creation", token: "TRX" });
   } catch (e) { /* best-effort */ }
 }
 
 async function createWallet(wtype, ownerUserId = null, label = "") {
   const w = await chain.newWallet();
-  const info = getDb().prepare(
+  const info = (await getDb().prepare(
     `INSERT INTO wallets(chain,address,enc_privkey,wtype,label,owner_user_id,is_active,created_at)
      VALUES('tron',?,?,?,?,?,1,?)`
-  ).run(w.address, sec.encryptSecret(w.privateKey), wtype, label, ownerUserId, now());
-  const wallet = getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid);
+  ).run(w.address, sec.encryptSecret(w.privateKey), wtype, label, ownerUserId, now()));
+  const wallet = (await getDb().prepare("SELECT * FROM wallets WHERE id=?").get(info.lastInsertRowid));
   // Gas pre-load and the one-time on-chain name are done in the BACKGROUND so wallet
   // creation returns immediately and the UI refreshes without waiting on the network.
   provisionNewWallet(wallet);
@@ -81,14 +81,14 @@ async function provisionNewWallet(wallet) {
     await preloadGas(wallet);
     const tpl = get().customer_onchain_name != null ? get().customer_onchain_name : "KryvonWallet-{id}";
     if (tpl && wallet.wtype === "deposit") {
-      const owner = wallet.owner_user_id ? getDb().prepare("SELECT username FROM users WHERE id=?").get(wallet.owner_user_id) : null;
+      const owner = wallet.owner_user_id ? (await getDb().prepare("SELECT username FROM users WHERE id=?").get(wallet.owner_user_id)) : null;
       const name = renderCustomerName(tpl, { id: wallet.owner_user_id || "", username: owner ? owner.username : "", app: get().app_name || "KryvonWallet" });
       if (name) await setOnchainName(wallet, name);
     }
   } catch (e) { /* non-fatal */ }
 }
-const getTreasury = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='treasury' AND is_active=1").get();
-const getFee = () => getDb().prepare("SELECT * FROM wallets WHERE wtype='fee' AND is_active=1").get();
+const getTreasury = async () => (await getDb().prepare("SELECT * FROM wallets WHERE wtype='treasury' AND is_active=1").get());
+const getFee = async () => (await getDb().prepare("SELECT * FROM wallets WHERE wtype='fee' AND is_active=1").get());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Ensure a wallet is activated and has TRX before it sends a TRC-20 transfer.
@@ -99,7 +99,7 @@ async function ensureEnergy(wallet) {
   if (mode === "burn" || !wallet) return;
   try {
     if (mode === "stake") {
-      const fee = getFee(); if (!fee) return;
+      const fee = await getFee(); if (!fee) return;
       const trx = Number(get().energy_delegate_trx || 0);
       if (trx > 0) { const feePk = sec.decryptSecret(fee.enc_privkey); await chain.delegateEnergy(feePk, wallet.address, trx, false); }
     } else if (mode === "rental") {
@@ -112,7 +112,7 @@ async function ensureEnergy(wallet) {
 }
 
 async function ensureGas(wallet) {
-  const fee = getFee();
+  const fee = await getFee();
   if (!fee || !wallet) return;
   await ensureEnergy(wallet);
   let trx = 0;
@@ -120,7 +120,7 @@ async function ensureGas(wallet) {
   if (trx >= Number(get().gas_fund_trx)) return;
   const feePk = sec.decryptSecret(fee.enc_privkey);
   const tx = await chain.sendNative(feePk, wallet.address, Number(get().gas_fund_trx));
-  record("gas_fund", fee.address, wallet.address, get().gas_fund_trx, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
+  await record("gas_fund", fee.address, wallet.address, get().gas_fund_trx, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
   // wait until the account is funded/activated before broadcasting the token transfer
   for (let i = 0; i < 10; i++) {
     try { if ((await chain.nativeBalance(wallet.address)) > 0) break; } catch { /* retry */ }
@@ -130,13 +130,13 @@ async function ensureGas(wallet) {
 
 async function scanAndSweep() {
   const db = getDb();
-  const treasury = getTreasury();
-  const fee = getFee();
+  const treasury = await getTreasury();
+  const fee = await getFee();
   const out = [];
   if (!treasury) return [{ error: "no treasury wallet configured" }];
 
   const rate = await getUsdRate();
-  const deposits = db.prepare("SELECT * FROM wallets WHERE wtype='deposit' AND is_active=1").all();
+  const deposits = (await db.prepare("SELECT * FROM wallets WHERE wtype='deposit' AND is_active=1").all());
   for (const w of deposits) {
     let bal;
     try { bal = await chain.usdtBalance(w.address); }
@@ -147,14 +147,14 @@ async function scanAndSweep() {
     // Falls back to a balance-only record if the transfer history can't be read.
     try {
       const incoming = await chain.listIncomingUsdt(w.address);
-      const known = new Set(db.prepare("SELECT tx_hash FROM movements WHERE kind='deposit_in' AND wallet_id=?").all(w.id).map((r) => r.tx_hash));
+      const known = new Set((await db.prepare("SELECT tx_hash FROM movements WHERE kind='deposit_in' AND wallet_id=?").all(w.id)).map((r) => r.tx_hash));
       for (const t of incoming) {
         if (t.txid && known.has(t.txid)) continue;
-        record("deposit_in", t.from, w.address, t.amount, t.txid, { walletId: w.id, status: "confirmed", note: "deposit received", usdRate: rate });
+        await record("deposit_in", t.from, w.address, t.amount, t.txid, { walletId: w.id, status: "confirmed", note: "deposit received", usdRate: rate });
         fireWebhook("deposit.received", { address: w.address, from: t.from, amount: t.amount, tx: t.txid });
       }
     } catch {
-      record("deposit_in", null, w.address, bal, null, { walletId: w.id, status: "confirmed", note: "detected on scan", usdRate: rate });
+      await record("deposit_in", null, w.address, bal, null, { walletId: w.id, status: "confirmed", note: "detected on scan", usdRate: rate });
     }
 
     let trx = 0;
@@ -163,13 +163,13 @@ async function scanAndSweep() {
       try {
         const feePk = sec.decryptSecret(fee.enc_privkey);
         const tx = await chain.sendNative(feePk, w.address, Number(get().gas_fund_trx));
-        record("gas_fund", fee.address, w.address, get().gas_fund_trx, tx, { walletId: w.id, note: "gas for sweep", token: "TRX" });
+        await record("gas_fund", fee.address, w.address, get().gas_fund_trx, tx, { walletId: w.id, note: "gas for sweep", token: "TRX" });
       } catch (e) { out.push({ wallet: w.address, error: "gas: " + e.message }); continue; }
     }
     try {
       const pk = sec.decryptSecret(w.enc_privkey);
       const tx = await chain.sendUsdt(pk, treasury.address, bal);
-      record("sweep", w.address, treasury.address, bal, tx, { walletId: w.id, note: "sweep to treasury", usdRate: rate });
+      await record("sweep", w.address, treasury.address, bal, tx, { walletId: w.id, note: "sweep to treasury", usdRate: rate });
       out.push({ wallet: w.address, swept: bal, tx });
     } catch (e) { out.push({ wallet: w.address, error: "sweep: " + e.message }); }
   }
@@ -190,7 +190,7 @@ function nextPoolWallet(pool) {
 // consolidating from the treasury (the reserve) first, then from other pool wallets.
 async function ensurePoolFunded(need, usdRate = null) {
   const db = getDb();
-  const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1 ORDER BY id").all();
+  const pool = (await db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1 ORDER BY id").all());
   if (!pool.length) throw new Error("disbursement pool is empty — provision it first");
 
   // round-robin selection — advances every payout
@@ -205,7 +205,7 @@ async function ensurePoolFunded(need, usdRate = null) {
   bals.sort((a, b) => b.b - a.b);
 
   const sources = [];
-  const treasury = getTreasury();
+  const treasury = await getTreasury();
   if (treasury) { let tb = 0; try { tb = await chain.usdtBalance(treasury.address); } catch { tb = 0; } sources.push({ w: treasury, b: tb }); }
   for (const x of bals) sources.push(x);
 
@@ -217,7 +217,7 @@ async function ensurePoolFunded(need, usdRate = null) {
     await ensureGas(s.w);
     const spk = sec.decryptSecret(s.w.enc_privkey);
     const tx = await chain.sendUsdt(spk, target.address, move);
-    record("topup", s.w.address, target.address, move, tx, { walletId: target.id, note: "consolidate for payout", usdRate });
+    await record("topup", s.w.address, target.address, move, tx, { walletId: target.id, note: "consolidate for payout", usdRate });
     have += move;
   }
 
@@ -239,15 +239,15 @@ async function ensurePoolFunded(need, usdRate = null) {
 // Runs every worker cycle so a transaction that confirms AFTER the initial window isn't stuck pending.
 async function reconcilePending() {
   const db = getDb();
-  const reqs = db.prepare("SELECT tx_hash FROM disbursement_requests WHERE status='pending' AND tx_hash IS NOT NULL").all();
-  const moves = db.prepare("SELECT tx_hash FROM movements WHERE status='pending' AND tx_hash IS NOT NULL").all();
+  const reqs = (await db.prepare("SELECT tx_hash FROM disbursement_requests WHERE status='pending' AND tx_hash IS NOT NULL").all());
+  const moves = (await db.prepare("SELECT tx_hash FROM movements WHERE status='pending' AND tx_hash IS NOT NULL").all());
   const hashes = [...new Set([...reqs.map((r) => r.tx_hash), ...moves.map((m) => m.tx_hash)].filter(Boolean))];
   for (const h of hashes) {
     let st; try { st = await chain.confirmTx(h, { tries: 3, gapMs: 1500 }); } catch { st = "pending"; }
     if (st === "pending") continue;
-    db.prepare("UPDATE disbursement_requests SET status=? WHERE tx_hash=? AND status='pending'").run(st, h);
-    db.prepare("UPDATE movements SET status=? WHERE tx_hash=? AND status='pending'").run(st, h);
-    if (st === "confirmed") { const r = db.prepare("SELECT * FROM disbursement_requests WHERE tx_hash=?").get(h); if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx: h, request_id: r.id }); }
+    (await db.prepare("UPDATE disbursement_requests SET status=? WHERE tx_hash=? AND status='pending'").run(st, h));
+    (await db.prepare("UPDATE movements SET status=? WHERE tx_hash=? AND status='pending'").run(st, h));
+    if (st === "confirmed") { const r = (await db.prepare("SELECT * FROM disbursement_requests WHERE tx_hash=?").get(h)); if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx: h, request_id: r.id }); }
   }
   return hashes.length;
 }
@@ -255,14 +255,14 @@ async function reconcilePending() {
 function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
   Promise.resolve()
     .then(() => chain.confirmTx(tx))
-    .then((status) => {
+    .then(async (status) => {
       if (status === "pending") return; // unknown yet — leave as pending
       const db = getDb();
-      if (moveId) db.prepare("UPDATE movements SET status=? WHERE id=?").run(status, moveId);
+      if (moveId) (await db.prepare("UPDATE movements SET status=? WHERE id=?").run(status, moveId));
       if (reqId) {
-        db.prepare("UPDATE disbursement_requests SET status=? WHERE id=? AND tx_hash=?").run(status, reqId, tx);
+        (await db.prepare("UPDATE disbursement_requests SET status=? WHERE id=? AND tx_hash=?").run(status, reqId, tx));
         if (status === "confirmed") {
-          const r = db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqId);
+          const r = (await db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(reqId));
           if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx, request_id: r.id });
         }
       }
@@ -283,20 +283,20 @@ async function executeDisbursement(req, approverId, cap = null) {
   const tx = await chain.sendUsdt(pk, req.to_address, amount);
   // Return immediately after broadcast (status "pending") so the UI is fast; the on-chain
   // receipt is checked in the background and the row flips to confirmed/failed when known.
-  const moveId = record("disburse_out", wallet.address, req.to_address, amount, tx,
+  const moveId = await record("disburse_out", wallet.address, req.to_address, amount, tx,
     { walletId: wallet.id, userId: req.staff_user_id, status: "pending", note: `payout req#${req.id}`, usdRate: rate });
-  db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
-    .run(approverId, wallet.id, tx, now(), req.id);
+  (await db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
+    .run(approverId, wallet.id, tx, now(), req.id));
   confirmInBackground(tx, { moveId, reqId: req.id });
-  return db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.id);
+  return (await db.prepare("SELECT * FROM disbursement_requests WHERE id=?").get(req.id));
 }
 
 // Distribute treasury USDT across the disbursement pool, holding back holdPct%.
 async function distributeTreasury(holdPct) {
   const db = getDb();
-  const treasury = getTreasury();
+  const treasury = await getTreasury();
   if (!treasury) throw new Error("no treasury wallet");
-  const pool = db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all();
+  const pool = (await db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all());
   if (!pool.length) throw new Error("no disbursement pool wallets to distribute to");
 
   const bal = await chain.usdtBalance(treasury.address);
@@ -311,7 +311,7 @@ async function distributeTreasury(holdPct) {
   for (const w of pool) {
     await ensureGas(treasury);
     const tx = await chain.sendUsdt(tpk, w.address, per);
-    record("topup", treasury.address, w.address, per, tx, { walletId: w.id, note: `treasury split (hold ${holdPct}%)`, usdRate: rate });
+    await record("topup", treasury.address, w.address, per, tx, { walletId: w.id, note: `treasury split (hold ${holdPct}%)`, usdRate: rate });
     distributed += per;
   }
   return { balance: bal, held: bal - distributed, distributed, per_wallet: per, count: pool.length };
@@ -319,7 +319,7 @@ async function distributeTreasury(holdPct) {
 
 // Admin-only: send USDT from treasury to any address.
 async function treasurySend(toAddress, amount) {
-  const treasury = getTreasury();
+  const treasury = await getTreasury();
   if (!treasury) throw new Error("no treasury wallet");
   return adminSendFrom(treasury, toAddress, amount);
 }
@@ -333,7 +333,7 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
   const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
-  const moveId = record(kind, sourceWallet.address, toAddress, Number(amount), tx,
+  const moveId = await record(kind, sourceWallet.address, toAddress, Number(amount), tx,
     { walletId: sourceWallet.id, status: "pending", note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
   confirmInBackground(tx, { moveId });
   return { tx, kind, status: "pending" };
@@ -357,27 +357,27 @@ function renderCustomerName(tpl, ctx) {
 }
 
 async function energyStatus() {
-  const fee = getFee();
+  const fee = await getFee();
   if (!fee) return { configured: false };
   let resources = {}; try { resources = await chain.accountResources(fee.address); } catch { resources = {}; }
   let trx = 0; try { trx = await chain.nativeBalance(fee.address); } catch { trx = 0; }
   return { configured: true, mode: get().energy_mode || "burn", address: fee.address, trx, ...resources };
 }
 async function stakeEnergy(trx) {
-  const fee = getFee(); if (!fee) throw new Error("no gas/energy wallet");
+  const fee = await getFee(); if (!fee) throw new Error("no gas/energy wallet");
   const pk = sec.decryptSecret(fee.enc_privkey);
   return { tx: await chain.freezeEnergy(pk, trx) };
 }
 async function unstakeEnergy(trx) {
-  const fee = getFee(); if (!fee) throw new Error("no gas/energy wallet");
+  const fee = await getFee(); if (!fee) throw new Error("no gas/energy wallet");
   const pk = sec.decryptSecret(fee.enc_privkey);
   return { tx: await chain.unfreezeEnergy(pk, trx) };
 }
 
 // Swap USDT (from treasury) to TRX and deliver it to the gas wallet.
 async function swapToGas(usdtAmount) {
-  const fee = getFee(); if (!fee) throw new Error("no gas wallet");
-  const src = getTreasury(); if (!src) throw new Error("no treasury wallet");
+  const fee = await getFee(); if (!fee) throw new Error("no gas wallet");
+  const src = await getTreasury(); if (!src) throw new Error("no treasury wallet");
   usdtAmount = Number(usdtAmount);
   if (!(usdtAmount > 0)) throw new Error("amount must be greater than 0");
   let bal = 0; try { bal = await chain.usdtBalance(src.address); } catch { bal = 0; }
@@ -385,13 +385,13 @@ async function swapToGas(usdtAmount) {
   await ensureGas(src); // treasury needs a little TRX / energy to pay for the swap tx
   const srcPk = sec.decryptSecret(src.enc_privkey);
   const r = await chain.swapUsdtToTrx(srcPk, usdtAmount, fee.address, Number(get().swap_slippage_percent || 5));
-  record("gas_swap", src.address, fee.address, r.trxOut || 0, r.tx, { note: `swapped ${usdtAmount} USDT to TRX`, token: "TRX" });
+  await record("gas_swap", src.address, fee.address, r.trxOut || 0, r.tx, { note: `swapped ${usdtAmount} USDT to TRX`, token: "TRX" });
   return { ...r, usdt_in: usdtAmount };
 }
 let _lastGasSwap = 0;
 async function maybeAutoRefillGas() {
   if (!get().auto_swap_enabled) return;
-  const fee = getFee(); if (!fee) return;
+  const fee = await getFee(); if (!fee) return;
   const amt = Number(get().auto_swap_usdt || 0); if (!(amt > 0)) return;
   let trx = 0; try { trx = await chain.nativeBalance(fee.address); } catch { return; }
   if (trx >= Number(get().gas_min_trx || 100)) return;

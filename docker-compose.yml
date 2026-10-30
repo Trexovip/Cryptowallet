@@ -3,10 +3,37 @@ services:
     build: .
     container_name: usdt-custody
     ports:
-      - "8000:8000"          # open http://localhost:8000/
+      - "8000:8000"              # open http://localhost:8000/
     volumes:
-      - custody-data:/app/data   # persists config + database across restarts
+      - custody-data:/app/data   # persists config + SQLite database across restarts
     restart: unless-stopped
+    environment:
+      # --- Database: default is embedded SQLite (no config needed). ---
+      # To run on MySQL/MariaDB instead, set DB_CLIENT=mysql and the MYSQL_* vars
+      # (or MYSQL_URL), and uncomment the "db" service + depends_on below.
+      - DB_CLIENT=${DB_CLIENT:-sqlite}
+      - MYSQL_HOST=${MYSQL_HOST:-db}
+      - MYSQL_PORT=${MYSQL_PORT:-3306}
+      - MYSQL_USER=${MYSQL_USER:-kryvon}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-kryvonpw}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-kryvon}
+      # - MYSQL_URL=mysql://user:pass@host:3306/dbname   # alternative to the vars above
+    # depends_on:
+    #   - db
+
+  # --- Optional MySQL/MariaDB service (uncomment to run the app on MySQL) ---
+  # db:
+  #   image: mariadb:11
+  #   container_name: usdt-custody-db
+  #   restart: unless-stopped
+  #   environment:
+  #     - MARIADB_DATABASE=kryvon
+  #     - MARIADB_USER=kryvon
+  #     - MARIADB_PASSWORD=kryvonpw
+  #     - MARIADB_ROOT_PASSWORD=change-me
+  #   volumes:
+  #     - custody-mysql:/var/lib/mysql
 
 volumes:
   custody-data:
+  # custody-mysql:

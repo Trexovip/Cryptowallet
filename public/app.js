@@ -151,8 +151,13 @@ function setNetwork(net){
 /* ======================================================= DASHBOARD */
 async function loadDash(fresh){
   try{
-    const d = await api("/dashboard" + (fresh ? "?fresh=1" : ""));
-    if (d.role === "admin") { try { d.energy = await api("/energy/status"); } catch (e) {} try { d.report = await api("/reports/summary?days=14"); } catch (e) {} }
+    const isAdmin = state.user.role === "admin";
+    const [d, energy, report] = await Promise.all([
+      api("/dashboard" + (fresh ? "?fresh=1" : "")),
+      isAdmin ? api("/energy/status").catch(() => null) : Promise.resolve(null),
+      isAdmin ? api("/reports/summary?days=14").catch(() => null) : Promise.resolve(null),
+    ]);
+    if (d.role === "admin") { d.energy = energy; d.report = report; }
     setNetwork(d.network);
     const body = $("#dashBody"); if (body) body.innerHTML = d.role === "admin" ? adminDash(d) : staffDash(d);
     const st = $("#dashUpdated"); if (st) st.textContent = "Updated " + new Date().toLocaleTimeString();
@@ -174,7 +179,12 @@ async function renderDashboard(){
 function adminDash(d){
   const poolTotal = (d.pool || []).reduce((s,w) => s + (Number(w.usdt)||0), 0);
   const treasuryVal = d.treasury ? fmtUsdt(d.treasury.usdt) : "—";
+  const _a = d.alerts || {}; const _al = [];
+  if (_a.low_gas) _al.push(`Gas wallet low (below ${_a.gas_min} TRX) — fund it or payouts may fail`);
+  if (_a.pending_approvals) _al.push(`${_a.pending_approvals} payout(s) awaiting approval`);
+  if (_a.failed_payouts_24h) _al.push(`${_a.failed_payouts_24h} failed transaction(s) in last 24h`);
   return `
+  ${_al.length ? `<div class="alert-box">⚠ <b>Needs attention:</b> ${_al.map(esc).join(" &middot; ")}</div>` : ""}
   <div class="readouts">
     <div class="readout">
       <div class="chip">◈</div>
@@ -203,6 +213,9 @@ function adminDash(d){
   </div>
   <div class="panel"><div class="panel-head"><h2>At a glance</h2></div>
     <div class="panel-body"><div class="stat-row">
+      <div class="s"><div class="n num">${fmtUsdt((d.today && d.today.deposits.volume) || 0)}</div><div class="l">Deposits &middot; 24h (${d.today ? d.today.deposits.count : 0})</div></div>
+      <div class="s"><div class="n num">${fmtUsdt((d.today && d.today.payouts.volume) || 0)}</div><div class="l">Payouts &middot; 24h (${d.today ? d.today.payouts.count : 0})</div></div>
+      <div class="s"><div class="n num">${fmtUsdt(((d.today ? d.today.deposits.volume : 0) - (d.today ? d.today.payouts.volume : 0)))}</div><div class="l">Net flow &middot; 24h</div></div>
       <div class="s"><div class="n num">${d.pending_approvals}</div><div class="l">Payouts awaiting approval</div></div>
       <div class="s"><div class="n num">${d.staff_count}</div><div class="l">Staff</div></div>
       <div class="s"><div class="n num">${d.deposit_wallet_count}</div><div class="l">Deposit addresses</div></div>
@@ -1531,6 +1544,7 @@ async function renderSettings(){
     </div>
     <div class="tab-pane" data-tab="security">
     <div class="panel"><div class="panel-head"><h2>Security</h2></div><div class="panel-body">
+      <div class="field"><label>Database engine</label><div><span class="role-pill">${esc((c.db_engine || "sqlite").toUpperCase())}</span> <span class="hint">${c.db_engine === "mysql" ? "MySQL / MariaDB" : "embedded SQLite"}</span></div></div>
       <div class="hint">The wallet encryption key and app secret live in server config / your KMS and are never shown or editable here — changing the encryption key would make existing wallets unrecoverable.</div>
     </div></div>
     </div>

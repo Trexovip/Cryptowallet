@@ -344,6 +344,45 @@ rules; anything above the limit waits for an admin. Keys can be revoked instantl
 **CSV export** (admin): download the full transaction ledger and audit log as CSV from the
 Transactions and Audit screens (`/transactions.csv`, `/audit.csv`) for accounting/compliance.
 
+.. _mysql-runtime:
+
+## Running on MySQL / MariaDB (or SQLite)
+
+The app runs on either **SQLite** (default, embedded, zero-config) or **MySQL/MariaDB**, chosen at
+startup — the same code, tested green against both. Pick the engine with env vars:
+
+```bash
+# default — embedded SQLite in the data volume, nothing to set
+DB_CLIENT=sqlite
+
+# OR run on MySQL / MariaDB:
+DB_CLIENT=mysql
+MYSQL_HOST=db  MYSQL_PORT=3306  MYSQL_USER=kryvon  MYSQL_PASSWORD=secret  MYSQL_DATABASE=kryvon
+# or a single URL:
+MYSQL_URL=mysql://kryvon:secret@db:3306/kryvon
+```
+
+On first start the app creates its schema automatically (from `db/mysql-schema.sql` for MySQL).
+`docker-compose.yml` has the env vars wired and a ready-to-uncomment `db:` MariaDB service.
+
+**One command to run app + MariaDB together:**
+```bash
+docker compose -f docker-compose.yml -f docker-compose.mysql.yml up -d --build
+```
+This starts a MariaDB service and the app configured for it (the app waits for the DB to be healthy).
+The live engine is shown in **Settings → Security → Database engine**.
+
+**Moving existing SQLite data into MySQL** (one-time): dump with the export tool and import it.
+```bash
+node tools/sql-export.js --dialect mysql --out data.sql
+mysql -u kryvon -p kryvon < data.sql
+```
+Then switch `DB_CLIENT=mysql` and restart.
+
+> Notes: the adapter translates the few SQLite-isms to MySQL automatically (null-safe `IS ?` → `<=>`,
+> `CAST(.. AS REAL)` → `DECIMAL`, and returns aggregate sums as numbers). `better-sqlite3` is still
+> used for the SQLite engine; `mysql2` for MySQL.
+
 ## Using MySQL / PostgreSQL for data management
 
 The app itself runs on an embedded **SQLite** database (in the Docker volume) — reliable and
