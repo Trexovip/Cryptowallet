@@ -7,6 +7,7 @@ const sec = require("./security");
 const { get, save } = require("./config");
 const { getUsdRate } = require("./price");
 const license = require("./license");
+const energy = require("./energy");
 
 const now = () => new Date().toISOString();
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
@@ -95,33 +96,57 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Ensure a wallet is activated and has TRX before it sends a TRC-20 transfer.
 // Tops it up from the gas (fee) wallet when low, then waits for on-chain confirmation.
 // Provision Energy for a wallet before a USDT transfer so it spends energy instead of burning TRX.
+// Provision Energy before a USDT transfer so it spends energy instead of burning TRX.
+// Returns true if an energy source was used (so the wallet needs only bandwidth TRX, not a burn top-up).
+// Mode "auto" (default): rent via the provider API if configured, else delegate self-staked energy,
+// else do nothing (caller falls back to burning TRX so the payout still succeeds).
+// Rental credentials can come from env (ENERGY_RENTAL_URL / ENERGY_RENTAL_API_KEY / ENERGY_RENTAL_AMOUNT)
+// so payouts can be made gas-free with zero in-app configuration.
 async function ensureEnergy(wallet) {
-  const mode = get().energy_mode || "burn";
-  if (mode === "burn" || !wallet) return;
+  const mode = get().energy_mode || "auto";
+  if (mode === "burn" || !wallet) return false;
+  const rentalAmt = Number(process.env.ENERGY_RENTAL_AMOUNT || get().energy_rental_amount || 65000);
+  const delegateTrx = Number(get().energy_delegate_trx || 0);
+  // TronZap credentials (env takes precedence so it works with zero in-app config)
+  const tzToken = process.env.TRONZAP_API_TOKEN || get().tronzap_api_token || "";
+  const tzSecret = process.env.TRONZAP_API_SECRET || get().tronzap_api_secret || "";
+  const provider = process.env.ENERGY_PROVIDER || get().energy_provider || (tzToken && tzSecret ? "tronzap" : "");
+  const rentalUrl = process.env.ENERGY_RENTAL_URL || get().energy_rental_url || "";
+  const rentalKey = process.env.ENERGY_RENTAL_API_KEY || get().energy_rental_api_key || "";
   try {
-    if (mode === "stake") {
-      const fee = await getFee(); if (!fee) return;
-      const trx = Number(get().energy_delegate_trx || 0);
-      if (trx > 0) { const feePk = sec.decryptSecret(fee.enc_privkey); await chain.delegateEnergy(feePk, wallet.address, trx, false); }
-    } else if (mode === "rental") {
-      const url = get().energy_rental_url; if (!url) return;
-      const headers = { "Content-Type": "application/json" };
-      if (get().energy_rental_api_key) headers.Authorization = "Bearer " + get().energy_rental_api_key;
-      await fetch(url, { method: "POST", headers, body: JSON.stringify({ address: wallet.address, energy: Number(get().energy_rental_amount || 65000) }) });
+    if ((mode === "rental" || mode === "auto") && provider === "tronzap" && tzToken && tzSecret) {
+      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
+      if (!r.ok) console.log("[energy] TronZap rent failed:", r.error);
+      return !!r.ok;
     }
-  } catch (e) { /* best-effort: if energy provisioning fails the transfer still goes through by burning TRX */ }
+    if ((mode === "rental" || mode === "auto") && rentalUrl) {
+      const r = await energy.genericRent(wallet.address, rentalAmt, { url: rentalUrl, apiKey: rentalKey });
+      return !!r.ok;
+    }
+    if ((mode === "stake" || mode === "auto") && delegateTrx > 0) {
+      const fee = await getFee(); if (!fee) return false;
+      const feePk = sec.decryptSecret(fee.enc_privkey);
+      await chain.delegateEnergy(feePk, wallet.address, delegateTrx, false);
+      return true;
+    }
+  } catch (e) { /* best-effort: fall back to burning TRX below */ }
+  return false;
 }
 
 async function ensureGas(wallet) {
   const fee = await getFee();
   if (!fee || !wallet) return;
-  await ensureEnergy(wallet);
+  const energized = await ensureEnergy(wallet);
   let trx = 0;
   try { trx = await chain.nativeBalance(wallet.address); } catch { trx = 0; }
-  if (trx >= Number(get().gas_fund_trx)) return;
+  // If energy was provisioned (rental/stake), the wallet only needs a little TRX for bandwidth —
+  // a gas-free transfer. Otherwise it must hold enough TRX to burn for energy so the payout still
+  // succeeds. This keeps the platform's real TRX spend near zero whenever an energy source exists.
+  const need = energized ? Number(get().bandwidth_trx != null ? get().bandwidth_trx : 2) : Number(get().gas_fund_trx);
+  if (trx >= need) return;
   const feePk = sec.decryptSecret(fee.enc_privkey);
-  const tx = await chain.sendNative(feePk, wallet.address, Number(get().gas_fund_trx));
-  await record("gas_fund", fee.address, wallet.address, get().gas_fund_trx, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
+  const tx = await chain.sendNative(feePk, wallet.address, need);
+  await record("gas_fund", fee.address, wallet.address, need, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
   // wait until the account is funded/activated before broadcasting the token transfer
   for (let i = 0; i < 10; i++) {
     try { if ((await chain.nativeBalance(wallet.address)) > 0) break; } catch { /* retry */ }
@@ -158,15 +183,10 @@ async function scanAndSweep() {
       await record("deposit_in", null, w.address, bal, null, { walletId: w.id, status: "confirmed", note: "detected on scan", usdRate: rate });
     }
 
-    let trx = 0;
-    try { trx = await chain.nativeBalance(w.address); } catch { /* unactivated */ }
-    if (trx < 1 && fee) {
-      try {
-        const feePk = sec.decryptSecret(fee.enc_privkey);
-        const tx = await chain.sendNative(feePk, w.address, Number(get().gas_fund_trx));
-        await record("gas_fund", fee.address, w.address, get().gas_fund_trx, tx, { walletId: w.id, note: "gas for sweep", token: "TRX" });
-      } catch (e) { out.push({ wallet: w.address, error: "gas: " + e.message }); continue; }
-    }
+    // Provision ENERGY first (staked delegation / rental), then only a minimal bandwidth TRX —
+    // so deposit wallets sweep gas-free instead of each burning a full TRX top-up.
+    try { await ensureGas(w); }
+    catch (e) { out.push({ wallet: w.address, error: "gas: " + e.message }); continue; }
     try {
       const pk = sec.decryptSecret(w.enc_privkey);
       const tx = await chain.sendUsdt(pk, treasury.address, bal);
@@ -252,9 +272,10 @@ async function reconcilePayoutsTo(address) {
   const ours = new Map((await db.prepare("SELECT id,address,wtype FROM wallets").all()).map((w) => [w.address, w]));
   const transfers = await chain.listTrc20Transfers(address, 5000);
   let scanned = transfers.length, inserted = 0;
+  if (ours.has(address)) return { mode: "payouts-to", address, scanned: 0, inserted: 0, note: "that address is one of your own wallets — use 'reconcile a wallet' instead" };
   for (const tr of transfers) {
-    if (tr.to !== address) continue;                 // only transfers that landed ON this address
-    const fromW = ours.get(tr.from);                 // ...and were sent FROM one of our wallets
+    if (tr.to !== address) continue;                 // only transfers that landed ON this (external) address
+    const fromW = ours.get(tr.from);                 // ...and were sent FROM one of our pool/treasury wallets
     if (!fromW || (fromW.wtype !== "disbursement" && fromW.wtype !== "treasury")) continue;
     if (await _insertTransfer(db, tr, fromW.wtype === "treasury" ? "treasury_out" : "disburse_out", fromW.id)) inserted++;
   }
@@ -268,14 +289,17 @@ async function reconcileWallet(address) {
   const db = getDb();
   const w = await db.prepare("SELECT id,address,wtype FROM wallets WHERE address=?").get(address);
   if (!w) throw new Error("that address is not one of your wallets — use 'check payouts to address' for an external address");
+  const ourAddrs = new Set((await db.prepare("SELECT address FROM wallets").all()).map((x) => x.address));
   const transfers = await chain.listTrc20Transfers(address, 5000);
   let scanned = transfers.length, inserted = 0;
   for (const tr of transfers) {
     if (w.wtype === "deposit") {
       if (tr.to !== address) continue;               // incoming only
+      if (ourAddrs.has(tr.from)) continue;           // skip internal (funded by one of our wallets) — only real customer deposits
       if (await _insertTransfer(db, tr, "deposit_in", w.id)) inserted++;
     } else {
       if (tr.from !== address) continue;             // outgoing only
+      if (ourAddrs.has(tr.to)) continue;             // skip internal (to one of our own wallets) — only real external payouts
       if (await _insertTransfer(db, tr, w.wtype === "treasury" ? "treasury_out" : "disburse_out", w.id)) inserted++;
     }
   }

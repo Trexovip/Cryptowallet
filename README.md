@@ -346,6 +346,48 @@ Transactions and Audit screens (`/transactions.csv`, `/audit.csv`) for accountin
 
 .. _mysql-runtime:
 
+## Gas-free payouts (default)
+
+Customers are gas-free by design (custodial — they never hold TRX or sign a transaction; the platform
+pays). The platform's own gas is handled automatically:
+
+- **Default energy mode is `auto`** — before every payout/sweep the platform provisions TRON **energy**
+  so transfers don't burn TRX. No per-payout configuration is required.
+- **`auto` tries, in order:** (1) **rent energy via the built-in provider API**, (2) delegate
+  **self-staked** energy, (3) fall back to **burning TRX** so the payout still succeeds if no energy
+  source is set.
+- **Make it truly gas-free with zero in-app settings** by pointing the built-in rental client at your
+  energy provider via env (so you never touch the UI):
+  ```bash
+  ENERGY_RENTAL_URL=https://your-energy-provider/api/delegate
+  ENERGY_RENTAL_API_KEY=your-key
+  ENERGY_RENTAL_AMOUNT=65000     # energy per USDT transfer (~65k)
+  ```
+  The client POSTs `{ "address": "<wallet>", "energy": <amount> }` with `Authorization: Bearer <key>`
+  and treats any 2xx as success. (Alternatively, switch to self-staked energy in Settings and freeze TRX.)
+- When energy is provisioned, wallets receive only a tiny **bandwidth** top-up (`bandwidth_trx`,
+  default 2) instead of a full burn top-up — keeping real TRX spend ~0.
+
+### TronZap (built-in, recommended)
+
+TronZap is integrated natively. To make every payout gas-free:
+1. Create an API **token** and **secret** at `dash.tronzap.com` and **fund your TronZap balance** (it's prepaid).
+2. Provide the credentials either in **Settings → Gas & energy → provider = TronZap**, or via env (zero in-app setup):
+   ```bash
+   TRONZAP_API_TOKEN=your_token
+   TRONZAP_API_SECRET=your_secret
+   # TRONZAP_BASE_URL=https://api.tronzap.com   # optional override
+   ```
+Before each payout/sweep the app calls `POST https://api.tronzap.com/v1/transaction/new` with
+`Authorization: Bearer <token>` and `X-Signature: sha256(rawBody + secret)`, renting ~65,000 energy to
+the sending wallet so the transfer burns no TRX. Default mode `auto` selects TronZap automatically when a
+token is present. The secret is only used to sign requests and is never transmitted.
+
+> Honest note: TRON energy is never literally free — you either rent it or stake TRX for it. `auto`
+> makes the platform use the cheapest configured source automatically and always keeps payouts working;
+> plug in a rental key (or stake) and payouts become gas-free with no other setup. A brand-new address
+> also needs a one-time ~1 TRX activation.
+
 ## Transaction history, address search & on-chain reconciliation
 
 - **No row cap:** the Transactions API accepts `limit=all` (or `limit=0`) to return the full history;

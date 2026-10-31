@@ -8,6 +8,7 @@ const tw = new TronWeb({ fullHost: "https://nile.trongrid.io" });
 
 const usdt = {};       // address -> USDT balance
 const _transfers = [];  // on-chain TRC-20 transfer log (for reconciliation tests)
+const _delegations = []; // energy delegations (for gas-free tests)
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
@@ -39,7 +40,8 @@ module.exports = {
   async accountResources(address) { const staked = _staked[address] || 0; const energy = Math.round(staked * 100); return { energyLimit: energy, energyUsed: 0, energyAvailable: energy, netLimit: 600, netUsed: 0, tronPowerLimit: staked }; },
   async freezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = (_staked[a] || 0) + Number(trx); return txid(); },
   async unfreezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = Math.max(0, (_staked[a] || 0) - Number(trx)); return txid(); },
-  async delegateEnergy() { return txid(); },
+  async delegateEnergy(pk, to, trx) { _delegations.push({ to, trx }); return txid(); },
+  __delegations() { return _delegations; },
   async undelegateEnergy() { return txid(); },
   __name(addr) { return names[addr]; },
   async sendUsdt(pk, to, amount) {

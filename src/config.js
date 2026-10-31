@@ -12,7 +12,8 @@ const DEFAULTS = {
   trongrid_api_key: "",
   usdt_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", // TRC-20 USDT (mainnet)
   sweep_min_usdt: 1.0,
-  gas_fund_trx: 20.0,
+  gas_fund_trx: 20.0,            // burn mode: TRX to top wallets up to, so TRON can burn it for energy
+  bandwidth_trx: 2.0,            // stake/rental mode: small TRX for bandwidth only (energy is delegated) — keeps real gas spend ~0
   disbursement_float_usdt: 500.0,
   max_disburse_usdt: 2000.0,
   poll_interval_seconds: 30,
@@ -40,8 +41,12 @@ const DEFAULTS = {
   qr_logo: "",                    // data URL / URL placed in the centre of QR codes
   customer_onchain_name: "KryvonWallet-{id}", // on-chain TRON name template per customer deposit wallet; {id} {username} {app} ("" = off)
   // Gas/energy strategy. USDT transfers cost Energy; without it TRON burns TRX (expensive).
-  energy_mode: "burn",            // "burn" = let TRON burn TRX (default) | "stake" = delegate self-staked energy | "rental" = buy from a provider
+  energy_mode: "auto",            // "auto" (default) = rent energy via provider API, else staked energy, else burn TRX | "burn" | "stake" | "rental"
   energy_delegate_trx: 0,         // stake mode: TRX of frozen balance to delegate to a wallet before each send (tune to cover ~65k energy)
+  energy_provider: "",            // "" = generic rental URL below | "tronzap" = TronZap signed API (set tronzap_api_token/secret, or env TRONZAP_API_TOKEN/SECRET)
+  tronzap_api_token: "",          // TronZap dashboard API token (or env TRONZAP_API_TOKEN)
+  tronzap_api_secret: "",         // TronZap dashboard API secret — signs requests, never sent (or env TRONZAP_API_SECRET)
+  tronzap_base_url: "",           // optional override; defaults to https://api.tronzap.com
   energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
   energy_rental_api_key: "",      // rental mode: bearer token for the provider
   energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)

@@ -1545,14 +1545,23 @@ async function renderSettings(){
       <div class="hint" style="margin-bottom:10px">USDT (TRC-20) transfers cost <b>Energy</b>. Without energy, TRON burns TRX per transfer (expensive). Use staked or rented energy to cut fees dramatically.</div>
       <div class="field"><label>Fee strategy</label>
         <select id="cfgEnergyMode" class="input">
-          <option value="burn"${(c.energy_mode||'burn')==='burn'?' selected':''}>Burn TRX (simple, highest cost)</option>
+          <option value="auto"${(c.energy_mode||'auto')==='auto'?' selected':''}>Auto — gas-free (rent energy via API, else staked, else burn)</option>
+          <option value="burn"${c.energy_mode==='burn'?' selected':''}>Burn TRX (simple, highest cost)</option>
           <option value="stake"${c.energy_mode==='stake'?' selected':''}>Self-staked energy (freeze TRX, delegate per send)</option>
           <option value="rental"${c.energy_mode==='rental'?' selected':''}>Rent energy from a provider</option>
         </select></div>
       <div class="field"><label>Delegate per send — TRX of staked balance (stake mode)</label><input id="cfgEnergyDelegate" class="input" type="number" min="0" step="1" value="${Number(c.energy_delegate_trx||0)}"><div class="hint">Enough frozen TRX to cover ~65,000 energy for one USDT transfer; tune on testnet for your network's energy price.</div></div>
-      <div class="field"><label>Rental endpoint URL (rental mode)</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
-      <div class="field"><label>Rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
-      <div class="field"><label>Energy per transfer (rental)</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
+      <div class="field"><label>Energy provider (auto / rental mode)</label>
+        <select id="cfgEnergyProvider" class="input">
+          <option value=""${(c.energy_provider||'')===''?' selected':''}>Generic rental URL (below)</option>
+          <option value="tronzap"${c.energy_provider==='tronzap'?' selected':''}>TronZap (recommended — signed API)</option>
+        </select>
+        <div class="hint">TronZap: create an API token + secret at dash.tronzap.com and fund your TronZap balance. Energy is auto-rented (~65k) before each payout — fully gas-free. Can also be set via env TRONZAP_API_TOKEN / TRONZAP_API_SECRET.</div></div>
+      <div class="field"><label>TronZap API token</label><input id="cfgTzToken" class="input" value="${esc(c.tronzap_api_token||'')}" placeholder="from dash.tronzap.com"></div>
+      <div class="field"><label>TronZap API secret</label><input id="cfgTzSecret" class="input" value="${esc(c.tronzap_api_secret_masked||'')}" placeholder="${c.has_tronzap_secret?'saved — leave to keep':'from dash.tronzap.com'}"></div>
+      <div class="field"><label>Generic rental endpoint URL</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
+      <div class="field"><label>Generic rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
+      <div class="field"><label>Energy per transfer</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
       <div class="hint" style="margin-bottom:8px">Auto top-up the gas wallet by swapping USDT → TRX (SunSwap, mainnet) when it runs low.</div>
       <label style="display:flex;align-items:center;gap:9px;font-size:14px;cursor:pointer"><input type="checkbox" id="cfgAutoSwap" ${c.auto_swap_enabled?"checked":""}> Enable auto-swap (USDT → TRX)</label>
@@ -1613,6 +1622,9 @@ async function renderSettings(){
         app_name: $("#cfgAppName").value.trim() || "KryvonWallet",
         customer_onchain_name: $("#cfgOnName").value.trim(),
         energy_mode: $("#cfgEnergyMode").value,
+        energy_provider: $("#cfgEnergyProvider") ? $("#cfgEnergyProvider").value : undefined,
+        tronzap_api_token: $("#cfgTzToken") ? $("#cfgTzToken").value.trim() : undefined,
+        tronzap_api_secret: ($("#cfgTzSecret") && !/[\u2022\u2026*]/.test($("#cfgTzSecret").value)) ? $("#cfgTzSecret").value.trim() : undefined,
         energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),

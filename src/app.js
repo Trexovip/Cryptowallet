@@ -167,6 +167,7 @@ app.post("/api/setup", async (req, res) => {
   const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : d; };
   const D = config.DEFAULTS;
   const cfg = {
+    ...D, // persist every default (incl. gas-free energy_mode "auto") so no post-setup configuration is needed
     app_secret: crypto.randomBytes(48).toString("hex"),
     wallet_enc_key: crypto.randomBytes(32).toString("hex"),
     tron_network: net,
@@ -886,7 +887,12 @@ app.get("/admin/config", currentUser, adminRequired, async (_req, res) => {
     favicon: c.favicon || "",
     qr_logo: c.qr_logo || "",
     customer_onchain_name: c.customer_onchain_name != null ? c.customer_onchain_name : "KryvonWallet-{id}",
-    energy_mode: c.energy_mode || "burn",
+    energy_mode: c.energy_mode || "auto",
+    energy_provider: c.energy_provider || "",
+    tronzap_api_token: c.tronzap_api_token || "",
+    tronzap_api_secret_masked: maskKey(c.tronzap_api_secret || ""),
+    has_tronzap_secret: !!c.tronzap_api_secret,
+    tronzap_base_url: c.tronzap_base_url || "",
     energy_delegate_trx: Number(c.energy_delegate_trx || 0),
     energy_rental_url: c.energy_rental_url || "",
     energy_rental_api_key: c.energy_rental_api_key || "",
@@ -921,7 +927,11 @@ app.post("/admin/config", currentUser, adminRequired, async (req, res) => {
   if (b.auto_distribute_enabled !== undefined) c.auto_distribute_enabled = !!b.auto_distribute_enabled;
   if (b.app_name !== undefined) c.app_name = String(b.app_name || "").trim().slice(0, 60) || "KryvonWallet";
   if (b.customer_onchain_name !== undefined) c.customer_onchain_name = String(b.customer_onchain_name || "").trim().slice(0, 64);
-  if (b.energy_mode !== undefined) c.energy_mode = ["burn", "stake", "rental"].includes(String(b.energy_mode)) ? String(b.energy_mode) : "burn";
+  if (b.energy_mode !== undefined) c.energy_mode = ["auto", "burn", "stake", "rental"].includes(String(b.energy_mode)) ? String(b.energy_mode) : "auto";
+  if (b.energy_provider !== undefined) c.energy_provider = ["", "tronzap", "generic"].includes(String(b.energy_provider)) ? String(b.energy_provider) : "";
+  if (b.tronzap_api_token !== undefined) c.tronzap_api_token = String(b.tronzap_api_token || "").trim();
+  if (b.tronzap_api_secret !== undefined && String(b.tronzap_api_secret||"").trim() && !/[\u2022\u2026*]/.test(String(b.tronzap_api_secret))) c.tronzap_api_secret = String(b.tronzap_api_secret).trim();
+  if (b.tronzap_base_url !== undefined) c.tronzap_base_url = String(b.tronzap_base_url || "").trim();
   if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
