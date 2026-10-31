@@ -1063,16 +1063,56 @@ app.post("/api/v1/payouts", apiAuth, requireScope("payouts"), wrap(async (req, r
 
 // ---------------- CSV export (admin) ----------------
 function csvEscape(v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
-// Build a movements query from export/search filters (address, from, to).
-function txExportQuery(q, cap) {
+// Shared filter builder for movements (address, date range, kind, status, free-text search, user).
+function movementFilters(q) {
   const w = [], p = [];
   const addr = (q.address || "").trim();
   if (addr) { w.push("(from_address=? OR to_address=?)"); p.push(addr, addr); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q.from || "")) { w.push("substr(created_at,1,10) >= ?"); p.push(q.from); }
   if (/^\d{4}-\d{2}-\d{2}$/.test(q.to || "")) { w.push("substr(created_at,1,10) <= ?"); p.push(q.to); }
-  const where = w.length ? "WHERE " + w.join(" AND ") : "";
-  return { sql: `SELECT * FROM movements ${where} ORDER BY id DESC LIMIT ${cap}`, params: p };
+  const kind = (q.kind || "").trim();
+  if (kind) { w.push("kind=?"); p.push(kind); }
+  const status = (q.status || "").trim();
+  if (["pending", "confirmed", "failed"].includes(status)) { w.push("status=?"); p.push(status); }
+  const token = (q.token || "").trim();
+  if (["USDT", "TRX"].includes(token)) { w.push("token=?"); p.push(token); }
+  const s = (q.q || "").trim();
+  if (s) { w.push("(tx_hash LIKE ? OR from_address LIKE ? OR to_address LIKE ?)"); const like = "%" + s + "%"; p.push(like, like, like); }
+  const uid = q.user_id ? Number(q.user_id) : null;
+  if (uid) { w.push("(initiated_by=? OR wallet_id IN (SELECT id FROM wallets WHERE owner_user_id=?))"); p.push(uid, uid); }
+  return { w, p };
 }
+function txExportQuery(q, cap) {
+  const { w, p } = movementFilters(q);
+  const where = w.length ? "WHERE " + w.join(" AND ") : "";
+  const order = (q.order === "asc") ? "ASC" : "DESC";
+  return { sql: `SELECT * FROM movements ${where} ORDER BY id ${order} LIMIT ${cap}`, params: p };
+}
+
+// Advanced, numbered pagination with filter-aware summary (admin). Returns a page plus totals.
+app.get("/transactions/query", currentUser, adminRequired, wrap(async (req, res) => {
+  const db = getDb();
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(500, Math.max(1, parseInt(req.query.page_size, 10) || 50));
+  const offset = (page - 1) * pageSize;
+  const order = (req.query.order === "asc") ? "ASC" : "DESC";
+  const { w, p } = movementFilters(req.query);
+  const where = w.length ? "WHERE " + w.join(" AND ") : "";
+  const summary = await db.prepare(
+    `SELECT COUNT(*) c,
+       COALESCE(SUM(CASE WHEN kind='deposit_in' THEN CAST(amount AS REAL) ELSE 0 END),0) vin,
+       COALESCE(SUM(CASE WHEN kind IN ('disburse_out','treasury_out') THEN CAST(amount AS REAL) ELSE 0 END),0) vout,
+       COALESCE(SUM(CAST(energy AS REAL)),0) en
+     FROM movements ${where}`).get(...p);
+  const raw = await db.prepare(`SELECT * FROM movements ${where} ORDER BY id ${order} LIMIT ? OFFSET ?`).all(...p, pageSize, offset);
+  const rows = await annotateCustomers(db, raw);
+  const total = Number(summary.c);
+  res.json({
+    total, page, page_size: pageSize, pages: Math.max(1, Math.ceil(total / pageSize)),
+    volume_in: Number(summary.vin), volume_out: Number(summary.vout), energy_total: Number(summary.en),
+    rows,
+  });
+}));
 
 app.get("/transactions.csv", currentUser, adminRequired, async (req, res) => {
   const { sql, params } = txExportQuery(req.query, 1000000);

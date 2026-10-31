@@ -403,3 +403,8 @@ tbody tr:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,transparen
   .topbar{height:54px;padding:0 14px}
   .topbar .who .role{display:none}
 }
+
+/* transactions pager */
+.pager{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px}
+.pager-ctrls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.pager-ctrls .btn[disabled]{opacity:.45;pointer-events:none}

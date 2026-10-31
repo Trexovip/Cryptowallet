@@ -366,6 +366,28 @@ function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
     .catch(() => { /* best-effort */ });
 }
 
+// Send USDT, but if it fails for lack of on-chain resources (energy/bandwidth), fund the wallet with
+// TRX from the gas wallet and retry once so TRON can burn for the resources. Energy stays primary;
+// TRX-burn is only the safety net — this prevents "account resource insufficient" failures.
+async function sendUsdtResilient(pk, to, amount, wallet) {
+  try { return await chain.sendUsdt(pk, to, amount); }
+  catch (e) {
+    const msg = String((e && e.message) || "");
+    if (!/resource|energy|bandwidth|insufficient|not\s*enough|balance is not sufficient/i.test(msg)) throw e;
+    const fee = await getFee();
+    if (fee && wallet) {
+      try {
+        const feePk = sec.decryptSecret(fee.enc_privkey);
+        const need = Number(get().gas_fund_trx) || 20;
+        const gtx = await chain.sendNative(feePk, wallet.address, need);
+        await record("gas_fund", fee.address, wallet.address, need, gtx, { walletId: wallet.id, note: "gas for send (resource fallback)", token: "TRX" });
+        for (let i = 0; i < 10; i++) { try { if ((await chain.nativeBalance(wallet.address)) > 0) break; } catch { /* retry */ } await sleep(1500); }
+      } catch (fundErr) { throw new Error("payout failed for lack of energy/bandwidth and the gas wallet could not be funded — top up the gas wallet with TRX or fund your energy provider"); }
+    }
+    return await chain.sendUsdt(pk, to, amount); // retry; the account can now burn TRX for resources
+  }
+}
+
 async function executeDisbursement(req, approverId, cap = null) {
   const db = getDb();
   const amount = Number(req.amount);
@@ -377,7 +399,7 @@ async function executeDisbursement(req, approverId, cap = null) {
   await ensureGas(wallet);
   const pk = sec.decryptSecret(wallet.enc_privkey);
   await license.assertPayoutAllowed();
-  const tx = await chain.sendUsdt(pk, req.to_address, amount);
+  const tx = await sendUsdtResilient(pk, req.to_address, amount, wallet);
   await license.recordUsage("payout", tx, amount);
   // Return immediately after broadcast (status "pending") so the UI is fast; the on-chain
   // receipt is checked in the background and the row flips to confirmed/failed when known.
@@ -430,7 +452,7 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   await ensureGas(sourceWallet);
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
   await license.assertPayoutAllowed();
-  const tx = await chain.sendUsdt(pk, toAddress, Number(amount));
+  const tx = await sendUsdtResilient(pk, toAddress, Number(amount), sourceWallet);
   await license.recordUsage("payout", tx, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
   const moveId = await record(kind, sourceWallet.address, toAddress, Number(amount), tx,

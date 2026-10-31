@@ -1357,23 +1357,33 @@ function showApiKeyOnce(key, scopes){
 }
 
 /* ---------- transactions (admin: all + filter by user; staff: own) ---------- */
-let txFilterUser = null, txFrom = "", txTo = "", txAddr = "";
+let txFilterUser = null, txFrom = "", txTo = "", txAddr = "", txKind = "", txStatus = "", txSearch = "", txOrder = "desc", txPage = 1, txPageSize = 50;
 function openUserTx(id){ txFilterUser = String(id); route("transactions"); }
 async function renderTransactions(){
   const sec = $("#sec-transactions");
   const isAdmin = state.user.role === "admin";
   sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
-    <div><h1>Transactions</h1><p>Full history of value movements${isAdmin ? " — filter by any user." : " you initiated."}</p></div>
+    <div><h1>Transactions</h1><p>${isAdmin ? "Full ledger — filter, search, paginate and export." : "History of movements you initiated."}</p></div>
     ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap">
       <button id="txExport" class="btn btn-ghost btn-sm">Export CSV</button>
       <button id="txExportJson" class="btn btn-ghost btn-sm">Export JSON</button>
       <button id="txImport" class="btn btn-ghost btn-sm">Import</button>
       <input type="file" id="txImportFile" accept=".json,.csv,application/json,text/csv" style="display:none">
     </div>` : ""}</div><div id="txBody">Loading…</div>`;
+  const qsFilters = () => { const q = [];
+    if (txSearch) q.push("q=" + encodeURIComponent(txSearch));
+    if (txAddr) q.push("address=" + encodeURIComponent(txAddr));
+    if (txFilterUser) q.push("user_id=" + encodeURIComponent(txFilterUser));
+    if (txKind) q.push("kind=" + encodeURIComponent(txKind));
+    if (txStatus) q.push("status=" + encodeURIComponent(txStatus));
+    if (txFrom) q.push("from=" + txFrom);
+    if (txTo) q.push("to=" + txTo);
+    if (txOrder === "asc") q.push("order=asc");
+    return q; };
   if (isAdmin) {
-    const txExportQs = () => { const q = []; if (txAddr) q.push("address=" + encodeURIComponent(txAddr)); if (txFrom) q.push("from=" + txFrom); if (txTo) q.push("to=" + txTo); return q.length ? "?" + q.join("&") : ""; };
-    $("#txExport").onclick = () => downloadCsv("/transactions.csv" + txExportQs(), "transactions.csv");
-    $("#txExportJson").onclick = () => downloadCsv("/transactions.json" + txExportQs(), "transactions.json");
+    const exportQs = () => { const q = qsFilters(); return q.length ? "?" + q.join("&") : ""; };
+    $("#txExport").onclick = () => downloadCsv("/transactions.csv" + exportQs(), "transactions.csv");
+    $("#txExportJson").onclick = () => downloadCsv("/transactions.json" + exportQs(), "transactions.json");
     const f = $("#txImportFile");
     $("#txImport").onclick = () => f.click();
     f.onchange = async () => {
@@ -1381,82 +1391,104 @@ async function renderTransactions(){
       let text; try { text = await file.text(); } catch { f.value = ""; return toast("Could not read file", true); }
       let transactions;
       const looksCsv = /\.csv$/i.test(file.name) || (!/^\s*[\[{]/.test(text) && /kind|amount|tx_hash/i.test(text.split(/\r?\n/)[0] || ""));
-      try {
-        if (looksCsv) transactions = csvToMovements(text);
-        else { const d = JSON.parse(text); transactions = Array.isArray(d) ? d : (d.transactions || []); }
-      } catch (e) { f.value = ""; return toast("Could not parse the file (expected JSON or CSV)", true); }
+      try { if (looksCsv) transactions = csvToMovements(text); else { const d = JSON.parse(text); transactions = Array.isArray(d) ? d : (d.transactions || []); } }
+      catch (e) { f.value = ""; return toast("Could not parse the file (expected JSON or CSV)", true); }
       if (!transactions || !transactions.length) { f.value = ""; return toast("No transactions found in the file", true); }
       try { const r = await api("/transactions/import", { method: "POST", body: { transactions } }); toast(`Imported ${r.imported}, skipped ${r.skipped}`); renderTransactions(); }
       catch (e) { toast(e.message, true); }
       f.value = "";
     };
   }
-  try{
+  try {
     let users = [], customers = [], walletsList = [];
-    if (isAdmin){
-      users = await api("/users");
-      try { customers = await api("/customers"); } catch(e){}
-      try { walletsList = await api("/wallets"); } catch(e){}
+    if (isAdmin) { users = await api("/users"); try { customers = await api("/customers"); } catch (e) {} try { walletsList = await api("/wallets"); } catch (e) {} }
+
+    if (!isAdmin) {
+      let rows = []; const PAGE = 100;
+      async function loadMore() {
+        const q = ["limit=" + PAGE]; if (rows.length) q.push("before=" + rows[rows.length - 1].id);
+        const page = await api("/transactions?" + q.join("&"));
+        rows = rows.concat(page); const more = page.length === PAGE;
+        $("#txBody").innerHTML = txTable(rows, false) + (more ? `<div style="text-align:center;margin-top:12px"><button id="txMore" class="btn btn-ghost btn-sm">Load older</button></div>` : (rows.length ? `<div class="hint" style="text-align:center;margin-top:10px">End of history — ${rows.length} shown</div>` : ""));
+        const mb = $("#txMore"); if (mb) mb.onclick = () => withBusy(mb, "Loading…", loadMore);
+      }
+      await loadMore(); return;
     }
-    const PAGE = 100;
-    let rows = [];
-    const baseQs = () => { const q = []; if (txAddr) q.push("address=" + encodeURIComponent(txAddr)); else if (txFilterUser) q.push("user_id=" + encodeURIComponent(txFilterUser)); if (txFrom) q.push("from=" + txFrom); if (txTo) q.push("to=" + txTo); return q; };
-    async function loadMore() {
-      const q = baseQs(); q.push("limit=" + PAGE); if (rows.length) q.push("before=" + rows[rows.length - 1].id);
-      const page = await api("/transactions?" + q.join("&"));
-      rows = rows.concat(page);
-      const more = page.length === PAGE;
-      const foot = more
-        ? `<div style="text-align:center;margin-top:12px"><button id="txMore" class="btn btn-ghost btn-sm">Load older</button></div>`
-        : (rows.length ? `<div class="hint" style="text-align:center;margin-top:10px">End of history — ${rows.length} shown</div>` : "");
-      $("#txList").innerHTML = txTable(rows, isAdmin) + foot;
-      const mb = $("#txMore"); if (mb) mb.onclick = () => withBusy(mb, "Loading…", loadMore);
-    }
-    const filter = isAdmin ? `<div class="panel"><div class="panel-body"><div class="field" style="margin:0">
-      <label>Filter by user</label>
-      <select id="txUser" class="input"><option value="">Everyone</option>
-        <optgroup label="Staff / admin">${users.map(u => `<option value="${u.id}"${String(txFilterUser)===String(u.id)?" selected":""}>${esc(u.username)} (${esc(u.role)})</option>`).join("")}</optgroup>
-        ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="${c.id}"${String(txFilterUser)===String(c.id)?" selected":""}>${esc(c.username)} (${esc(c.customer_type)})</option>`).join("")}</optgroup>` : ""}
-      </select></div>
+
+    const kinds = [["","All types"],["deposit_in","Deposit"],["disburse_out","Payout"],["treasury_out","Treasury send"],["sweep","Sweep"],["topup","Top-up"],["gas_fund","Gas"],["gas_swap","Gas swap"]];
+    const filter = `<div class="panel"><div class="panel-body">
+      <div class="form-grid">
+        <div class="field" style="margin:0"><label>User</label><select id="txUser" class="input"><option value="">Everyone</option>
+          <optgroup label="Staff / admin">${users.map(u => `<option value="${u.id}"${String(txFilterUser)===String(u.id)?" selected":""}>${esc(u.username)} (${esc(u.role)})</option>`).join("")}</optgroup>
+          ${customers.length ? `<optgroup label="Customers">${customers.map(c => `<option value="${c.id}"${String(txFilterUser)===String(c.id)?" selected":""}>${esc(c.username)}</option>`).join("")}</optgroup>` : ""}
+        </select></div>
+        <div class="field" style="margin:0"><label>Type</label><select id="txKind" class="input">${kinds.map(k => `<option value="${k[0]}"${txKind===k[0]?" selected":""}>${k[1]}</option>`).join("")}</select></div>
+        <div class="field" style="margin:0"><label>Status</label><select id="txStatus" class="input">${[["","Any"],["confirmed","Confirmed"],["pending","Pending"],["failed","Failed"]].map(s => `<option value="${s[0]}"${txStatus===s[0]?" selected":""}>${s[1]}</option>`).join("")}</select></div>
+      </div>
       <div class="form-grid" style="margin-top:10px">
         <div class="field" style="margin:0"><label>From (date)</label><input id="txFrom" type="date" class="input" value="${txFrom}"></div>
         <div class="field" style="margin:0"><label>To (date)</label><input id="txTo" type="date" class="input" value="${txTo}"></div>
+        <div class="field" style="margin:0"><label>Sort</label><select id="txOrder" class="input"><option value="desc"${txOrder==="desc"?" selected":""}>Newest first</option><option value="asc"${txOrder==="asc"?" selected":""}>Oldest first</option></select></div>
       </div>
-      <div class="form-actions" style="margin-top:10px"><button id="txApply" class="btn btn-ghost btn-sm">Apply dates</button><button id="txClear" class="btn btn-ghost btn-sm">Clear</button><span class="hint">All history is kept — pick any range, even a year back.</span></div>
-      <div class="field" style="margin-top:12px"><label>Search by address (ledger — in/out, all wallets, no limit)</label>
-        <input id="txAddr" class="input mono" placeholder="T… (any of our wallets or an external address)" value="${esc(txAddr)}"></div>
-      <div class="form-actions"><button id="txAddrGo" class="btn btn-primary btn-sm">Search address</button></div>
+      <div class="field" style="margin-top:10px"><label>Search (tx hash or address)</label><input id="txSearch" class="input mono" placeholder="tx hash / T-address…" value="${esc(txSearch)}"></div>
+      <div class="form-actions" style="margin-top:10px"><button id="txApply" class="btn btn-primary btn-sm">Apply filters</button><button id="txClear" class="btn btn-ghost btn-sm">Clear</button><span class="hint">All history is kept — filter by any range, type, status, user or address.</span></div>
       <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
       <div class="hint" style="margin-bottom:8px"><b>Reconcile from chain (Tronscan/TronGrid)</b> — pull on-chain history and backfill anything missing.</div>
-      <div class="field" style="margin:0"><label>Check payouts to an external address</label>
-        <input id="rcTo" class="input mono" placeholder="beneficiary T-address — saves only payouts sent from your pool/treasury"></div>
-      <div class="form-actions" style="margin-bottom:10px"><button id="rcToGo" class="btn btn-ghost btn-sm">Check & save payouts to this address</button></div>
-      <div class="field" style="margin:0"><label>Reconcile one of your wallets</label>
-        <select id="rcWallet" class="input">
-          <optgroup label="Deposit wallets (fetch incoming deposits)">${walletsList.filter(w=>w.wtype==="deposit").map(w=>`<option value="${esc(w.address)}">${esc(w.label||("deposit "+w.id))} — ${esc(w.address.slice(0,10))}…</option>`).join("")}</optgroup>
-          <optgroup label="Pool / treasury (fetch outgoing payouts)">${walletsList.filter(w=>w.wtype==="disbursement"||w.wtype==="treasury").map(w=>`<option value="${esc(w.address)}">${esc(w.wtype)} ${w.id} — ${esc(w.address.slice(0,10))}…</option>`).join("")}</optgroup>
-        </select></div>
-      <div class="form-actions"><button id="rcWalletGo" class="btn btn-ghost btn-sm">Reconcile selected wallet</button><button id="rcAll" class="btn btn-ghost btn-sm">Reconcile all wallets</button></div>
-      </div></div>` : "";
-    $("#txBody").innerHTML = filter + `<div id="txList">Loading…</div>`;
-    await loadMore();
-    if (isAdmin) {
-      $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; renderTransactions(); };
-      const af = $("#txApply"); if (af) af.onclick = () => { txFrom = $("#txFrom").value || ""; txTo = $("#txTo").value || ""; renderTransactions(); };
-      const cl = $("#txClear"); if (cl) cl.onclick = () => { txFrom = ""; txTo = ""; txAddr = ""; renderTransactions(); };
-      const ag = $("#txAddrGo"); if (ag) ag.onclick = () => { txAddr = ($("#txAddr").value || "").trim(); txFilterUser = null; renderTransactions(); };
-      const runRecon = async (btn, body, label) => withBusy(btn, "Reconciling…", async () => {
-        try { const r = await api("/reconcile", { method: "POST", body }); toast(`${label} — scanned ${r.scanned}, added ${r.inserted}`); if (body.address) txAddr = body.address; renderTransactions(); }
-        catch (e) { toast(e.message, true); }
-      });
-      const rt = $("#rcToGo"); if (rt) rt.onclick = () => { const a = ($("#rcTo").value || "").trim(); if (!a) return toast("Enter an address", true); runRecon(rt, { mode: "payouts-to", address: a }, "Payouts check"); };
-      const rw = $("#rcWalletGo"); if (rw) rw.onclick = () => { const a = $("#rcWallet").value; if (!a) return toast("No wallet selected", true); runRecon(rw, { mode: "wallet", address: a }, "Wallet reconcile"); };
-      const rall = $("#rcAll"); if (rall) rall.onclick = async () => {
-        const ok = await confirmModal({ title: "Reconcile all wallets", okLabel: "Reconcile all", bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Pull on-chain history for every wallet (deposits for deposit wallets, payouts for pool/treasury) and backfill anything missing. Safe to run repeatedly.</p>` });
-        if (ok) runRecon(rall, { mode: "all" }, "Reconcile all");
-      };
+      <div class="field" style="margin:0"><label>Address (external beneficiary, or one of your wallets)</label><input id="txAddr" class="input mono" placeholder="T…" value="${esc(txAddr)}"></div>
+      <div class="form-actions" style="margin-top:8px;flex-wrap:wrap">
+        <button id="txAddrGo" class="btn btn-ghost btn-sm">Search this address</button>
+        <button id="rcToGo" class="btn btn-ghost btn-sm">Save payouts to address</button>
+        <select id="rcWallet" class="input" style="max-width:260px"><optgroup label="Deposit (fetch deposits)">${walletsList.filter(w=>w.wtype==="deposit").map(w=>`<option value="${esc(w.address)}">${esc(w.label||("deposit "+w.id))}</option>`).join("")}</optgroup><optgroup label="Pool / treasury (fetch payouts)">${walletsList.filter(w=>w.wtype==="disbursement"||w.wtype==="treasury").map(w=>`<option value="${esc(w.address)}">${esc(w.wtype)} ${w.id}</option>`).join("")}</optgroup></select>
+        <button id="rcWalletGo" class="btn btn-ghost btn-sm">Reconcile wallet</button>
+        <button id="rcAll" class="btn btn-ghost btn-sm">Reconcile all</button>
+      </div>
+    </div></div>`;
+    $("#txBody").innerHTML = filter + `<div id="txSummary"></div><div id="txList">Loading…</div><div id="txPager"></div>`;
+
+    async function loadPage() {
+      const q = qsFilters(); q.push("page=" + txPage); q.push("page_size=" + txPageSize);
+      let d; try { d = await api("/transactions/query?" + q.join("&")); } catch (e) { $("#txList").innerHTML = emptyState(e.message); return; }
+      txPage = d.page;
+      const net = d.volume_in - d.volume_out;
+      $("#txSummary").innerHTML = `<div class="stat-row" style="margin-bottom:14px">
+        <div class="s"><div class="n num">${d.total.toLocaleString()}</div><div class="l">Transactions (filter)</div></div>
+        <div class="s"><div class="n num">${fmtUsdt(d.volume_in)}</div><div class="l">Volume in (USDT)</div></div>
+        <div class="s"><div class="n num">${fmtUsdt(d.volume_out)}</div><div class="l">Volume out (USDT)</div></div>
+        <div class="s"><div class="n num">${fmtUsdt(net)}</div><div class="l">Net (USDT)</div></div>
+        <div class="s"><div class="n num">${Number(d.energy_total||0).toLocaleString()}</div><div class="l">Energy used</div></div>
+      </div>`;
+      $("#txList").innerHTML = txTable(d.rows, true);
+      const start = d.total === 0 ? 0 : ((d.page - 1) * d.page_size + 1);
+      const end = Math.min(d.total, d.page * d.page_size);
+      $("#txPager").innerHTML = `<div class="pager">
+        <span class="hint">${start.toLocaleString()}–${end.toLocaleString()} of ${d.total.toLocaleString()}</span>
+        <span class="pager-ctrls">
+          <button class="btn btn-ghost btn-sm" data-pg="first" ${d.page<=1?"disabled":""}>« First</button>
+          <button class="btn btn-ghost btn-sm" data-pg="prev" ${d.page<=1?"disabled":""}>‹ Prev</button>
+          <span class="hint">Page <input id="txJump" class="input" type="number" min="1" max="${d.pages}" value="${d.page}" style="width:60px;display:inline-block;padding:4px 6px"> / ${d.pages}</span>
+          <button class="btn btn-ghost btn-sm" data-pg="next" ${d.page>=d.pages?"disabled":""}>Next ›</button>
+          <button class="btn btn-ghost btn-sm" data-pg="last" ${d.page>=d.pages?"disabled":""}>Last »</button>
+          <select id="txSize" class="input" style="width:auto;display:inline-block">${[25,50,100,200].map(n=>`<option value="${n}"${txPageSize===n?" selected":""}>${n}/page</option>`).join("")}</select>
+        </span></div>`;
+      $("#txPager").querySelectorAll("[data-pg]").forEach(b => b.onclick = () => { const a = b.getAttribute("data-pg");
+        if (a==="first") txPage=1; else if (a==="prev") txPage=Math.max(1,d.page-1); else if (a==="next") txPage=Math.min(d.pages,d.page+1); else if (a==="last") txPage=d.pages; loadPage(); });
+      const jp = $("#txJump"); if (jp) jp.onchange = () => { txPage = Math.max(1, Math.min(d.pages, parseInt(jp.value,10)||1)); loadPage(); };
+      const sz = $("#txSize"); if (sz) sz.onchange = () => { txPageSize = parseInt(sz.value,10)||50; txPage=1; loadPage(); };
     }
-  }catch(e){ $("#txBody").innerHTML = emptyState(e.message); }
+    const applyFilters = () => { txPage = 1; loadPage(); };
+    $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; applyFilters(); };
+    $("#txKind").onchange = (e) => { txKind = e.target.value || ""; applyFilters(); };
+    $("#txStatus").onchange = (e) => { txStatus = e.target.value || ""; applyFilters(); };
+    $("#txOrder").onchange = (e) => { txOrder = e.target.value || "desc"; applyFilters(); };
+    $("#txApply").onclick = () => { txFrom = $("#txFrom").value || ""; txTo = $("#txTo").value || ""; txSearch = ($("#txSearch").value||"").trim(); applyFilters(); };
+    $("#txClear").onclick = () => { txFilterUser=null; txKind=""; txStatus=""; txFrom=""; txTo=""; txSearch=""; txAddr=""; txOrder="desc"; txPage=1; renderTransactions(); };
+    $("#txAddrGo").onclick = () => { txAddr = ($("#txAddr").value||"").trim(); applyFilters(); };
+    const runRecon = async (btn, body, label) => withBusy(btn, "Reconciling…", async () => { try { const r = await api("/reconcile", { method: "POST", body }); toast(`${label} — scanned ${r.scanned}, added ${r.inserted}`); if (body.address && body.mode !== "payouts-to") txAddr = body.address; applyFilters(); } catch (e) { toast(e.message, true); } });
+    $("#rcToGo").onclick = () => { const a = ($("#txAddr").value||"").trim(); if (!a) return toast("Enter an address", true); runRecon($("#rcToGo"), { mode:"payouts-to", address:a }, "Payouts check"); };
+    $("#rcWalletGo").onclick = () => { const a = $("#rcWallet").value; if (!a) return toast("No wallet selected", true); runRecon($("#rcWalletGo"), { mode:"wallet", address:a }, "Wallet reconcile"); };
+    $("#rcAll").onclick = async () => { const ok = await confirmModal({ title:"Reconcile all wallets", okLabel:"Reconcile all", bodyHtml:`<p style="margin:0;font-size:14px;color:var(--muted)">Pull on-chain history for every wallet and backfill anything missing. Safe to run repeatedly.</p>` }); if (ok) runRecon($("#rcAll"), { mode:"all" }, "Reconcile all"); };
+    await loadPage();
+  } catch (e) { $("#txBody").innerHTML = emptyState(e.message); }
 }
 function txTable(rows, showWho){
   const body = (rows||[]).map(m => `<tr>

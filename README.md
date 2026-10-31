@@ -390,6 +390,17 @@ token is present. The secret is only used to sign requests and is never transmit
 > plug in a rental key (or stake) and payouts become gas-free with no other setup. A brand-new address
 > also needs a one-time ~1 TRX activation.
 
+## Advanced transactions view (admin)
+
+The admin Transactions page is a full reporting console backed by `GET /transactions/query`:
+- **Filters:** user, type (deposit/payout/treasury/sweep/gas…), status (confirmed/pending/failed), date range,
+  and a free-text search over tx hash / address.
+- **Filter-aware summary:** count, volume in, volume out, net, and total energy for the current filter.
+- **Proper pagination:** numbered pages with First/Prev/Next/Last, jump-to-page, "X–Y of Z", page-size
+  selector (25/50/100/200) and newest/oldest sort.
+- **Export** (CSV/JSON) honors every active filter, so you export exactly what you're viewing.
+Staff keep a lightweight "Load older" cursor list scoped to their own activity and assigned customers.
+
 ## Energy per transaction & wallet history
 
 - **Energy per transaction:** each payout records the energy it consumes (~65,000 for a standard USDT

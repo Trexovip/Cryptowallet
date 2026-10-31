@@ -15,7 +15,7 @@ const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
 const _staked = {};    // address -> TRX frozen for energy (mock)
 const _failTx = {};    // txid -> true when a simulated tx should confirm as failed
-let _failNext = false; // when true, the next sendUsdt simulates an on-chain failure
+let _failNext = false, _resourceFail = false; // when true, the next sendUsdt simulates an on-chain failure
 let _pendNext = 0;    // number of confirmTx calls that should report "pending" before confirming
 const txid = () => crypto.randomBytes(32).toString("hex");
 const addrFromPk = (pk) => tw.address.fromPrivateKey(pk);
@@ -50,6 +50,7 @@ module.exports = {
   __name(addr) { return names[addr]; },
   async sendUsdt(pk, to, amount) {
     const from = addrFromPk(pk); amount = Number(amount);
+    if (_resourceFail) { _resourceFail = false; throw new Error("account resource insufficient"); }
     if (_failNext) { _failNext = false; const id = txid(); _failTx[id] = true; return id; } // simulate on-chain revert (no funds move)
     if ((usdt[from] || 0) + 1e-9 < amount) throw new Error("insufficient USDT (demo)");
     usdt[from] = (usdt[from] || 0) - amount; usdt[to] = (usdt[to] || 0) + amount;
@@ -68,6 +69,7 @@ module.exports = {
   },
   __seedTrx(addr, amt) { trx[addr] = (trx[addr] || 0) + amt; },
   __failNextSend(v = true) { _failNext = v; },
+  __resourceFailNext(v = true) { _resourceFail = v; },
   __pendingNextConfirm(n = 1) { _pendNext = n; },
   __usdt(addr) { return usdt[addr] || 0; },
 };
