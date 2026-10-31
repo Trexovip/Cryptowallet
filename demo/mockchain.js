@@ -9,6 +9,7 @@ const tw = new TronWeb({ fullHost: "https://nile.trongrid.io" });
 const usdt = {};       // address -> USDT balance
 const _transfers = [];  // on-chain TRC-20 transfer log (for reconciliation tests)
 const _delegations = []; // energy delegations (for gas-free tests)
+const _bandwidth = {};   // address -> available bandwidth (default ample)
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
@@ -27,6 +28,8 @@ module.exports = {
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
   async listTrc20Transfers(addr) { return _transfers.filter((x) => x.from === addr || x.to === addr); },
   async txEnergyUsed() { return 64285; },
+  async availableBandwidth(addr) { return _bandwidth[addr] != null ? _bandwidth[addr] : 5000; },
+  __setBandwidth(addr, n) { _bandwidth[addr] = n; },
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
   async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },

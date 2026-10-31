@@ -1589,6 +1589,7 @@ async function renderSettings(){
       <div class="field"><label>TronZap API token</label><input id="cfgTzToken" class="input" value="${esc(c.tronzap_api_token||'')}" placeholder="from dash.tronzap.com"></div>
       <div class="field"><label>TronZap API secret</label><input id="cfgTzSecret" class="input" value="${esc(c.tronzap_api_secret_masked||'')}" placeholder="${c.has_tronzap_secret?'saved — leave to keep':'from dash.tronzap.com'}"></div>
       <div class="field"><label>TronZap bandwidth per transfer</label><input id="cfgTzBw" class="input" type="number" min="0" step="1" value="${Number(c.tronzap_bandwidth!=null?c.tronzap_bandwidth:345)}"><div class="hint">Rented with energy so transfers need zero TRX (345 ≈ one USDT transfer; 0 = energy only, relies on free daily bandwidth).</div></div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="cfgTzSmartBw" ${(c.tronzap_smart_bandwidth!==false)?"checked":""}> Only rent bandwidth when free bandwidth is insufficient (saves cost)</label>
       <div class="field"><label>Generic rental endpoint URL</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
       <div class="field"><label>Generic rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
       <div class="field"><label>Energy per transfer</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
@@ -1656,6 +1657,7 @@ async function renderSettings(){
         tronzap_api_token: $("#cfgTzToken") ? $("#cfgTzToken").value.trim() : undefined,
         tronzap_api_secret: ($("#cfgTzSecret") && !/[\u2022\u2026*]/.test($("#cfgTzSecret").value)) ? $("#cfgTzSecret").value.trim() : undefined,
         tronzap_bandwidth: $("#cfgTzBw") ? (parseInt($("#cfgTzBw").value,10)||0) : undefined,
+        tronzap_smart_bandwidth: $("#cfgTzSmartBw") ? $("#cfgTzSmartBw").checked : undefined,
         energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),

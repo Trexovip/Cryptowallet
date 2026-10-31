@@ -901,6 +901,7 @@ app.get("/admin/config", currentUser, adminRequired, async (_req, res) => {
     tronzap_base_url: c.tronzap_base_url || "",
     tronzap_bandwidth: Number(c.tronzap_bandwidth != null ? c.tronzap_bandwidth : 345),
     tronzap_activate: !!c.tronzap_activate,
+    tronzap_smart_bandwidth: c.tronzap_smart_bandwidth !== false,
     energy_delegate_trx: Number(c.energy_delegate_trx || 0),
     energy_rental_url: c.energy_rental_url || "",
     energy_rental_api_key: c.energy_rental_api_key || "",
@@ -942,6 +943,7 @@ app.post("/admin/config", currentUser, adminRequired, async (req, res) => {
   if (b.tronzap_base_url !== undefined) c.tronzap_base_url = String(b.tronzap_base_url || "").trim();
   if (b.tronzap_bandwidth !== undefined) c.tronzap_bandwidth = Math.max(0, Number(b.tronzap_bandwidth) || 0);
   if (b.tronzap_activate !== undefined) c.tronzap_activate = !!b.tronzap_activate;
+  if (b.tronzap_smart_bandwidth !== undefined) c.tronzap_smart_bandwidth = !!b.tronzap_smart_bandwidth;
   if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();

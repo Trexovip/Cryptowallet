@@ -49,6 +49,7 @@ const DEFAULTS = {
   tronzap_base_url: "",           // optional override; defaults to https://api.tronzap.com
   tronzap_bandwidth: 345,         // bandwidth to rent alongside energy (0 = energy only; 345 covers one USDT transfer)
   tronzap_activate: false,        // ask TronZap to activate brand-new destination addresses too
+  tronzap_smart_bandwidth: true,  // rent bandwidth only when the wallet's free bandwidth can't cover the transfer
   energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
   energy_rental_api_key: "",      // rental mode: bearer token for the provider
   energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)

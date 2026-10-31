@@ -209,6 +209,16 @@ async function confirmTx(txid, { tries = 10, gapMs = 2000 } = {}) {
   return "pending"; // broadcast but not yet confirmed within the window
 }
 
+// Available bandwidth for an address: free daily quota + staked/delegated, minus used.
+async function availableBandwidth(address) {
+  try {
+    const r = await limit(() => base().trx.getAccountResources(address));
+    const free = Number(r.freeNetLimit || 0) - Number(r.freeNetUsed || 0);
+    const staked = Number(r.NetLimit || 0) - Number(r.NetUsed || 0);
+    return Math.max(0, free + staked);
+  } catch { return 0; }
+}
+
 // Actual energy consumed by a confirmed transaction, from its on-chain receipt (null if unknown).
 async function txEnergyUsed(txid) {
   if (!txid) return null;
@@ -226,7 +236,7 @@ async function signMessage(privHex, message) {
 }
 
 // Route every network-touching function through the global throttle/queue.
-const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, listTrc20Transfers, txEnergyUsed, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, listTrc20Transfers, txEnergyUsed, availableBandwidth, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
 const _throttled = {};
 for (const [k, f] of Object.entries(_networkFns)) _throttled[k] = (...args) => limit(() => f(...args));
 // newWallet / addressFromPrivateKey / signMessage are local (no network) — left unthrottled.

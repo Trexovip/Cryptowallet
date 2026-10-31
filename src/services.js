@@ -115,7 +115,13 @@ async function ensureEnergy(wallet) {
   const rentalKey = process.env.ENERGY_RENTAL_API_KEY || get().energy_rental_api_key || "";
   try {
     if ((mode === "rental" || mode === "auto") && provider === "tronzap" && tzToken && tzSecret) {
-      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, bandwidth: Number(process.env.TRONZAP_BANDWIDTH != null ? process.env.TRONZAP_BANDWIDTH : (get().tronzap_bandwidth != null ? get().tronzap_bandwidth : 345)), activate: !!get().tronzap_activate, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
+      let bandwidth = Number(process.env.TRONZAP_BANDWIDTH != null ? process.env.TRONZAP_BANDWIDTH : (get().tronzap_bandwidth != null ? get().tronzap_bandwidth : 345));
+      // Smart: only pay to rent bandwidth when the wallet's free/own bandwidth can't cover the transfer.
+      if (bandwidth > 0 && get().tronzap_smart_bandwidth !== false) {
+        let avail = 0; try { avail = await chain.availableBandwidth(wallet.address); } catch { avail = 0; }
+        if (avail >= bandwidth) bandwidth = 0; // free bandwidth is enough — don't rent
+      }
+      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, bandwidth, activate: !!get().tronzap_activate, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
       if (!r.ok) console.log("[energy] TronZap rent failed:", r.error);
       return !!r.ok;
     }
