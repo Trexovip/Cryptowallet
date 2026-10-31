@@ -68,6 +68,7 @@ module.exports = {
     _transfers.push({ from: _from, to: addr, txid: _id, value: amt, timestamp: Date.now() });
   },
   __seedTrx(addr, amt) { trx[addr] = (trx[addr] || 0) + amt; },
+  __setTrx(addr, amt) { trx[addr] = amt; },
   __failNextSend(v = true) { _failNext = v; },
   __resourceFailNext(v = true) { _resourceFail = v; },
   __pendingNextConfirm(n = 1) { _pendNext = n; },

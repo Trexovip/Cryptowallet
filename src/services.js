@@ -366,6 +366,55 @@ function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
     .catch(() => { /* best-effort */ });
 }
 
+// Can payouts currently be funded? Checks the energy provider (TronZap balance) and the gas wallet.
+// Cached briefly so the dashboard can poll it without hammering the provider API.
+let _readyCache = null, _readyAt = 0;
+function _tzCreds() {
+  const cfg = get();
+  const token = process.env.TRONZAP_API_TOKEN || cfg.tronzap_api_token || "";
+  const secret = process.env.TRONZAP_API_SECRET || cfg.tronzap_api_secret || "";
+  const provider = process.env.ENERGY_PROVIDER || cfg.energy_provider || (token && secret ? "tronzap" : "");
+  return { token, secret, provider };
+}
+async function payoutReadiness(force = false) {
+  if (!force && _readyCache && Date.now() - _readyAt < 60000) return _readyCache;
+  const cfg = get(); const mode = cfg.energy_mode || "auto";
+  const fee = await getFee();
+  let gasTrx = 0; try { if (fee) gasTrx = await chain.nativeBalance(fee.address); } catch { gasTrx = 0; }
+  const gasFund = Number(cfg.gas_fund_trx || 20);
+  const gasOk = gasTrx >= gasFund;
+  const { token, secret, provider } = _tzCreds();
+  const usesTz = (mode === "auto" || mode === "rental") && provider === "tronzap" && token && secret;
+  let tzBalance = null, tzOk = false;
+  if (usesTz) {
+    const b = await energy.tronzapBalance({ token, secret, baseUrl: process.env.TRONZAP_BASE_URL || cfg.tronzap_base_url });
+    if (b.ok) { tzBalance = b.balance; tzOk = (b.balance == null) || Number(b.balance) > 0; }
+  }
+  const genericRental = (mode === "auto" || mode === "rental") && !usesTz && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
+  const staked = (mode === "auto" || mode === "stake") && Number(cfg.energy_delegate_trx || 0) > 0;
+  const ready = tzOk || gasOk || staked || genericRental;
+  let reason = "";
+  if (!ready) reason = usesTz
+    ? "TronZap balance looks empty and the gas wallet has no TRX — fund your TronZap balance or send TRX to the gas wallet."
+    : "No energy source: fund the gas wallet with TRX, or configure and fund an energy provider (TronZap).";
+  const out = { ready, mode, provider: usesTz ? "tronzap" : (genericRental ? "generic" : (staked ? "stake" : "burn")), gas_trx: gasTrx, gas_fund_trx: gasFund, gas_ok: gasOk, tronzap_configured: !!usesTz, tronzap_balance: tzBalance, tronzap_ok: tzOk, staked, reason };
+  _readyCache = out; _readyAt = Date.now();
+  return out;
+}
+// Fast per-payout preflight: block early with a clear message only when there is NO way to pay resources.
+async function assertResourceSource(wallet) {
+  const cfg = get(); const mode = cfg.energy_mode || "auto";
+  const { token, secret, provider } = _tzCreds();
+  const tzConfigured = (mode === "auto" || mode === "rental") && provider === "tronzap" && token && secret;
+  const genericRental = (mode === "auto" || mode === "rental") && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
+  const staked = (mode === "auto" || mode === "stake") && Number(cfg.energy_delegate_trx || 0) > 0;
+  if (tzConfigured || genericRental || staked) return; // a provider exists; the send + fallback handle the rest
+  const fee = await getFee();
+  let gasTrx = 0; try { if (fee) gasTrx = await chain.nativeBalance(fee.address); } catch { gasTrx = 0; }
+  if (gasTrx >= Number(cfg.gas_fund_trx || 20)) return; // gas wallet can fund the TRX burn
+  throw new Error("Can't pay network resources for this payout: no energy provider is configured and the gas wallet is empty. Fund your TronZap balance, or send some TRX to the gas wallet, then retry.");
+}
+
 // Send USDT, but if it fails for lack of on-chain resources (energy/bandwidth), fund the wallet with
 // TRX from the gas wallet and retry once so TRON can burn for the resources. Energy stays primary;
 // TRX-burn is only the safety net — this prevents "account resource insufficient" failures.
@@ -398,6 +447,7 @@ async function executeDisbursement(req, approverId, cap = null) {
   const wallet = await ensurePoolFunded(amount, rate);
   await ensureGas(wallet);
   const pk = sec.decryptSecret(wallet.enc_privkey);
+  await assertResourceSource(wallet);
   await license.assertPayoutAllowed();
   const tx = await sendUsdtResilient(pk, req.to_address, amount, wallet);
   await license.recordUsage("payout", tx, amount);
@@ -451,6 +501,7 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   const rate = await getUsdRate();
   await ensureGas(sourceWallet);
   const pk = sec.decryptSecret(sourceWallet.enc_privkey);
+  await assertResourceSource(sourceWallet);
   await license.assertPayoutAllowed();
   const tx = await sendUsdtResilient(pk, toAddress, Number(amount), sourceWallet);
   await license.recordUsage("payout", tx, Number(amount));
@@ -533,5 +584,5 @@ async function ownershipProof(wallet, project) {
 module.exports = {
   audit, record, createWallet, getTreasury, getFee, scanAndSweep, ensurePoolFunded, executeDisbursement,
   distributeTreasury, treasurySend, adminSendFrom, importWallet, fireWebhook, setOnchainName, ownershipProof, renderCustomerName,
-  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending, reconcilePayoutsTo, reconcileWallet, reconcileAll,
+  ensureEnergy, energyStatus, stakeEnergy, unstakeEnergy, swapToGas, maybeAutoRefillGas, reconcilePending, reconcilePayoutsTo, reconcileWallet, reconcileAll, payoutReadiness, assertResourceSource,
 };

@@ -1477,6 +1477,7 @@ app.get("/audit", currentUser, adminRequired, async (req, res) => {
 });
 
 // ---------------- dashboard ----------------
+app.get("/payout-readiness", currentUser, adminRequired, wrap(async (_req, res) => { res.json(await svc.payoutReadiness(true)); }));
 app.get("/license", currentUser, adminRequired, wrap(async (_req, res) => { res.json({ ...license.status(), usage: await license.usageSummary() }); }));
 app.get("/dashboard", currentUser, wrap(async (req, res) => {
   const chain = require("./chain");
@@ -1495,7 +1496,7 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
     const since24 = new Date(Date.now() - 86400000).toISOString();
     const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM for "energy this month"
     // all balance reads + aggregates run in parallel (chain reads still rate-limited by the throttle)
-    const [treUsdt, feeBal, poolUsdts, staffCount, depCount, pending, dep24, pay24, failed24, energyMonth] = await Promise.all([
+    const [treUsdt, feeBal, poolUsdts, staffCount, depCount, pending, dep24, pay24, failed24, energyMonth, readiness] = await Promise.all([
       treasury ? safeUsdt(treasury.address) : null,
       fee ? Promise.all([safeUsdt(fee.address), safeNative(fee.address)]) : [null, null],
       Promise.all(pool.map((w) => safeUsdt(w.address))),
@@ -1506,6 +1507,7 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
       db.prepare("SELECT COUNT(*) c, COALESCE(SUM(CAST(amount AS REAL)),0) v FROM movements WHERE kind='disburse_out' AND token='USDT' AND created_at>=?").get(since24),
       db.prepare("SELECT COUNT(*) c FROM movements WHERE kind IN ('disburse_out','treasury_out') AND status='failed' AND created_at>=?").get(since24),
       db.prepare("SELECT COALESCE(SUM(CAST(energy AS REAL)),0) e FROM movements WHERE kind IN ('disburse_out','treasury_out') AND substr(created_at,1,7)=?").get(monthKey),
+      svc.payoutReadiness().catch(() => null),
     ]);
     const poolOut = pool.map((w, i) => ({ id: w.id, address: w.address, usdt: poolUsdts[i] }));
     const gasMin = Number(config.get().gas_fund_trx || 20);
@@ -1519,6 +1521,8 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
       today: { deposits: { count: dep24.c, volume: Number(dep24.v) }, payouts: { count: pay24.c, volume: Number(pay24.v) }, failed_payouts: failed24.c },
       energy_month: Number(energyMonth.e || 0),
       alerts: {
+        payout_risk: !!(readiness && readiness.ready === false),
+        payout_reason: readiness ? readiness.reason : "",
         low_gas: feeNative != null && Number(feeNative) < gasMin,
         gas_min: gasMin,
         pending_approvals: pending.c,

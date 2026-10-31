@@ -180,6 +180,7 @@ function adminDash(d){
   const poolTotal = (d.pool || []).reduce((s,w) => s + (Number(w.usdt)||0), 0);
   const treasuryVal = d.treasury ? fmtUsdt(d.treasury.usdt) : "—";
   const _a = d.alerts || {}; const _al = [];
+  if (_a.payout_risk) _al.push(_a.payout_reason || "Payouts can't be funded — fund your TronZap balance or the gas wallet");
   if (_a.low_gas) _al.push(`Gas wallet low (below ${_a.gas_min} TRX) — fund it or payouts may fail`);
   if (_a.pending_approvals) _al.push(`${_a.pending_approvals} payout(s) awaiting approval`);
   if (_a.failed_payouts_24h) _al.push(`${_a.failed_payouts_24h} failed transaction(s) in last 24h`);
