@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS movements (
   initiated_by BIGINT,
   note VARCHAR(255) DEFAULT '',
   usd_rate VARCHAR(40),
+  energy VARCHAR(20),
   created_at VARCHAR(40) NOT NULL,
   confirmed_at VARCHAR(40),
   INDEX idx_mv_kind (kind),

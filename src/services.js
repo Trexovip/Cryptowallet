@@ -16,12 +16,12 @@ async function audit(userId, action, detail = "", ip = "") {
   (await getDb().prepare("INSERT INTO audit_log(user_id,action,detail,ip,created_at) VALUES(?,?,?,?,?)")
     .run(userId, action, detail, ip, now()));
 }
-async function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "confirmed", note = "", token = "USDT", usdRate = null } = {}) {
+async function record(kind, from, to, amount, tx, { walletId = null, userId = null, status = "confirmed", note = "", token = "USDT", usdRate = null, energy = null } = {}) {
   return (await getDb().prepare(
-    `INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at)
-     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,energy,created_at)
+     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(kind, "tron", token, from, to, String(amount), tx, status, walletId, userId, note,
-        usdRate == null ? null : String(usdRate), now())).lastInsertRowid;
+        usdRate == null ? null : String(usdRate), energy == null ? null : String(energy), now())).lastInsertRowid;
 }
 
 function fireWebhook(event, data) {
@@ -115,7 +115,7 @@ async function ensureEnergy(wallet) {
   const rentalKey = process.env.ENERGY_RENTAL_API_KEY || get().energy_rental_api_key || "";
   try {
     if ((mode === "rental" || mode === "auto") && provider === "tronzap" && tzToken && tzSecret) {
-      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
+      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, bandwidth: Number(process.env.TRONZAP_BANDWIDTH != null ? process.env.TRONZAP_BANDWIDTH : (get().tronzap_bandwidth != null ? get().tronzap_bandwidth : 345)), activate: !!get().tronzap_activate, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
       if (!r.ok) console.log("[energy] TronZap rent failed:", r.error);
       return !!r.ok;
     }
@@ -134,16 +134,18 @@ async function ensureEnergy(wallet) {
 }
 
 async function ensureGas(wallet) {
+  const energyPerTx = Number(get().energy_rental_amount || 65000); // energy a USDT transfer consumes
   const fee = await getFee();
-  if (!fee || !wallet) return;
+  if (!fee || !wallet) return energyPerTx;
   const energized = await ensureEnergy(wallet);
   let trx = 0;
   try { trx = await chain.nativeBalance(wallet.address); } catch { trx = 0; }
-  // If energy was provisioned (rental/stake), the wallet only needs a little TRX for bandwidth —
-  // a gas-free transfer. Otherwise it must hold enough TRX to burn for energy so the payout still
-  // succeeds. This keeps the platform's real TRX spend near zero whenever an energy source exists.
-  const need = energized ? Number(get().bandwidth_trx != null ? get().bandwidth_trx : 2) : Number(get().gas_fund_trx);
-  if (trx >= need) return;
+  // If energy was provisioned (TronZap/stake), send NO TRX for gas — the transfer uses the rented/
+  // delegated energy and the account's free daily bandwidth. Only when energy provisioning FAILED do
+  // we fall back to funding TRX so TRON can burn it and the payout still goes through. (bandwidth_trx
+  // defaults to 0; raise it only if you hit bandwidth limits on high-volume wallets.)
+  const need = energized ? Number(get().bandwidth_trx != null ? get().bandwidth_trx : 0) : Number(get().gas_fund_trx);
+  if (need <= 0 || trx >= need) return energyPerTx;
   const feePk = sec.decryptSecret(fee.enc_privkey);
   const tx = await chain.sendNative(feePk, wallet.address, need);
   await record("gas_fund", fee.address, wallet.address, need, tx, { walletId: wallet.id, note: "gas for send", token: "TRX" });
@@ -152,6 +154,7 @@ async function ensureGas(wallet) {
     try { if ((await chain.nativeBalance(wallet.address)) > 0) break; } catch { /* retry */ }
     await sleep(1500);
   }
+  return energyPerTx;
 }
 
 async function scanAndSweep() {
@@ -326,7 +329,10 @@ async function reconcilePending() {
     if (st === "pending") continue;
     (await db.prepare("UPDATE disbursement_requests SET status=? WHERE tx_hash=? AND status='pending'").run(st, h));
     (await db.prepare("UPDATE movements SET status=? WHERE tx_hash=? AND status='pending'").run(st, h));
-    if (st === "confirmed") { const r = (await db.prepare("SELECT * FROM disbursement_requests WHERE tx_hash=?").get(h)); if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx: h, request_id: r.id }); }
+    if (st === "confirmed") {
+      try { const e = await chain.txEnergyUsed(h); if (e != null) await db.prepare("UPDATE movements SET energy=? WHERE tx_hash=?").run(String(e), h); } catch { /* keep estimate */ }
+      const r = (await db.prepare("SELECT * FROM disbursement_requests WHERE tx_hash=?").get(h)); if (r) fireWebhook("payout.sent", { to: r.to_address, amount: Number(r.amount), tx: h, request_id: r.id });
+    }
   }
   return hashes.length;
 }
@@ -337,7 +343,12 @@ function confirmInBackground(tx, { moveId = null, reqId = null } = {}) {
     .then(async (status) => {
       if (status === "pending") return; // unknown yet — leave as pending
       const db = getDb();
-      if (moveId) (await db.prepare("UPDATE movements SET status=? WHERE id=?").run(status, moveId));
+      if (moveId) {
+        (await db.prepare("UPDATE movements SET status=? WHERE id=?").run(status, moveId));
+        if (status === "confirmed") { // replace the estimate with the real energy from the receipt
+          try { const e = await chain.txEnergyUsed(tx); if (e != null) await db.prepare("UPDATE movements SET energy=? WHERE id=?").run(String(e), moveId); } catch { /* keep estimate */ }
+        }
+      }
       if (reqId) {
         (await db.prepare("UPDATE disbursement_requests SET status=? WHERE id=? AND tx_hash=?").run(status, reqId, tx));
         if (status === "confirmed") {
@@ -365,7 +376,7 @@ async function executeDisbursement(req, approverId, cap = null) {
   // Return immediately after broadcast (status "pending") so the UI is fast; the on-chain
   // receipt is checked in the background and the row flips to confirmed/failed when known.
   const moveId = await record("disburse_out", wallet.address, req.to_address, amount, tx,
-    { walletId: wallet.id, userId: req.staff_user_id, status: "pending", note: `payout req#${req.id}`, usdRate: rate });
+    { walletId: wallet.id, userId: req.staff_user_id, status: "pending", note: `payout req#${req.id}`, usdRate: rate, energy: Number(get().energy_rental_amount || 65000) });
   (await db.prepare("UPDATE disbursement_requests SET status='pending', approved_by=?, from_wallet_id=?, tx_hash=?, resolved_at=? WHERE id=?")
     .run(approverId, wallet.id, tx, now(), req.id));
   confirmInBackground(tx, { moveId, reqId: req.id });
@@ -417,7 +428,7 @@ async function adminSendFrom(sourceWallet, toAddress, amount) {
   await license.recordUsage("payout", tx, Number(amount));
   const kind = sourceWallet.wtype === "treasury" ? "treasury_out" : "disburse_out";
   const moveId = await record(kind, sourceWallet.address, toAddress, Number(amount), tx,
-    { walletId: sourceWallet.id, status: "pending", note: `admin send from ${sourceWallet.wtype}`, usdRate: rate });
+    { walletId: sourceWallet.id, status: "pending", note: `admin send from ${sourceWallet.wtype}`, usdRate: rate, energy: Number(get().energy_rental_amount || 65000) });
   confirmInBackground(tx, { moveId });
   return { tx, kind, status: "pending" };
 }

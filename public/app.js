@@ -216,6 +216,7 @@ function adminDash(d){
       <div class="s"><div class="n num">${fmtUsdt((d.today && d.today.deposits.volume) || 0)}</div><div class="l">Deposits &middot; 24h (${d.today ? d.today.deposits.count : 0})</div></div>
       <div class="s"><div class="n num">${fmtUsdt((d.today && d.today.payouts.volume) || 0)}</div><div class="l">Payouts &middot; 24h (${d.today ? d.today.payouts.count : 0})</div></div>
       <div class="s"><div class="n num">${fmtUsdt(((d.today ? d.today.deposits.volume : 0) - (d.today ? d.today.payouts.volume : 0)))}</div><div class="l">Net flow &middot; 24h</div></div>
+      <div class="s"><div class="n num">${d.energy_month ? Number(d.energy_month).toLocaleString() : 0}</div><div class="l">Energy used &middot; this month</div></div>
       <div class="s"><div class="n num">${d.pending_approvals}</div><div class="l">Payouts awaiting approval</div></div>
       <div class="s"><div class="n num">${d.staff_count}</div><div class="l">Staff</div></div>
       <div class="s"><div class="n num">${d.deposit_wallet_count}</div><div class="l">Deposit addresses</div></div>
@@ -253,7 +254,7 @@ function movementsPanel(moves){
   return `<div class="panel"><div class="panel-head"><h2>Recent movements</h2></div>
     <div class="panel-body flush">
     ${rows ? `<table><thead><tr><th>Type</th><th>From</th><th>To</th>
-      <th class="amt">Amount</th><th>Status</th><th>Tx</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      <th class="amt">Amount</th><th>Energy</th><th>Status</th><th>Tx</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : emptyState("No movements yet.")}
     </div></div>`;
 }
@@ -263,9 +264,18 @@ async function renderWallets(){
   const sec = $("#sec-wallets");
   if (state.user.role === "staff") return renderReceive(sec);
 
-  sec.innerHTML = `<div class="page-head"><div><h1>Wallets</h1>
-    <p>Treasury, gas, disbursement pool, and per-staff deposit addresses.</p></div></div>
+  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px"><div><h1>Wallets</h1>
+    <p>Treasury, gas, disbursement pool, and per-staff deposit addresses.</p></div>
+    <button id="wReconAll" class="btn btn-ghost btn-sm">Reconcile all from chain</button></div>
     <div id="wBody">Loading…</div>`;
+  { const ra = $("#wReconAll"); if (ra) ra.onclick = async () => {
+      const ok = await confirmModal({ title: "Reconcile all wallets", okLabel: "Reconcile all", bodyHtml: `<p style="margin:0;font-size:14px;color:var(--muted)">Pull on-chain history for every wallet (deposits for deposit wallets, payouts for pool/treasury) and backfill anything missing. Safe to run repeatedly.</p>` });
+      if (!ok) return;
+      await withBusy(ra, "Reconciling…", async () => {
+        try { const r = await api("/reconcile", { method: "POST", body: { mode: "all" } }); toast(`Reconciled ${r.wallets} wallet(s) — scanned ${r.scanned}, added ${r.inserted}`); }
+        catch (e) { toast(e.message, true); }
+      });
+    }; }
   try{
     const [wallets, users, settings, book, customers] = await Promise.all([
       api("/wallets"), api("/users"), api("/settings"), api("/address-book").catch(() => []), api("/customers").catch(() => [])
@@ -342,7 +352,7 @@ async function renderWallets(){
            ${pool.map(w => `<tr><td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
              <td class="amt num" id="pbal-${w.id}">—</td>
              <td class="amt num" id="ptrx-${w.id}">—</td>
-             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}" data-trxcell="ptrx-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="pool">Remove</button></td></tr>`).join("")}
+             <td class="row-actions"><button class="btn btn-ghost btn-sm bal" data-id="${w.id}" data-cell="pbal-${w.id}" data-trxcell="ptrx-${w.id}">Check</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm" data-recon="${esc(w.address)}">Reconcile</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="pool">Remove</button></td></tr>`).join("")}
            </tbody></table>`
         : emptyState("No pool wallets yet. Payouts draw from these, topped up from treasury.")}
       </div></div>
@@ -366,7 +376,7 @@ async function renderWallets(){
         ? `<table><thead><tr><th>Owner</th><th>Label</th><th>Address</th><th></th></tr></thead><tbody>
            ${deposits.map(w => `<tr><td>${esc(uname(w.owner_user_id))}</td>
              <td>${esc(w.label||"—")}</td><td>${addrHtml(w.address)}</td>
-             <td class="row-actions"><span class="hint" id="bal-${w.id}"></span><button class="btn btn-ghost btn-sm" data-bal="${w.id}">Balance</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="deposit">Remove</button></td></tr>`).join("")}</tbody></table>`
+             <td class="row-actions"><span class="hint" id="bal-${w.id}"></span><button class="btn btn-ghost btn-sm" data-bal="${w.id}">Balance</button><button class="btn btn-ghost btn-sm" data-secret="${w.id}">Key</button><button class="btn btn-ghost btn-sm" data-wname="${w.id}" data-wlabel="${esc(w.label||'')}">Name</button><button class="btn btn-ghost btn-sm" data-qr="${esc(w.address)}" data-qrlabel="${esc(w.label||'')}">QR</button><button class="btn btn-ghost btn-sm" data-recon="${esc(w.address)}">Reconcile</button><button class="btn btn-ghost btn-sm wdeact" data-id="${w.id}" data-kind="deposit">Remove</button></td></tr>`).join("")}</tbody></table>`
         : emptyState("No deposit addresses yet.")}
       </div></div>
 
@@ -739,6 +749,13 @@ async function openReceipt(key){
   catch (e) { toast(e.message, true); }
 }
 
+async function reconcileOneWallet(btn){
+  const address = btn.getAttribute("data-recon");
+  await withBusy(btn, "Reconciling…", async () => {
+    try { const r = await api("/reconcile", { method: "POST", body: { mode: "wallet", address } }); toast(`Reconciled — scanned ${r.scanned}, added ${r.inserted}`); }
+    catch (e) { toast(e.message, true); }
+  });
+}
 async function checkWalletBalance(btn){
   const id = btn.dataset.bal, span = document.getElementById("bal-" + id);
   const prev = btn.textContent; btn.disabled = true; btn.textContent = "…";
@@ -763,6 +780,8 @@ document.addEventListener("click", (e) => {
   if (sk){ showSecret(sk.dataset.secret); return; }
   const bl = e.target.closest("[data-bal]");
   if (bl){ checkWalletBalance(bl); return; }
+  const rcn = e.target.closest("[data-recon]");
+  if (rcn){ reconcileOneWallet(rcn); return; }
   const ut = e.target.closest("[data-usertx]");
   if (ut){ openUserTx(ut.dataset.usertx); return; }
   const q = e.target.closest("[data-qr]");
@@ -844,7 +863,7 @@ async function renderMyCustomers(){
         <div class="stat-row"><div class="s"><div class="n num">${fmtUsdt(c.total_received)}</div><div class="l">Total received (USDT)</div></div>
           ${c.phone ? `<div class="s"><div class="n" style="font-size:14px">${esc(c.phone)}</div><div class="l">Phone</div></div>` : ""}</div>
         <div class="panel-body flush" style="padding:0;margin-top:10px">${(c.recent && c.recent.length)
-          ? `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>${c.customer_type === "remittance" ? "To" : "From"}</th><th class="amt">Amount</th><th>Status</th></tr></thead><tbody>
+          ? `<div class="tbl-wrap"><table><thead><tr><th>Date</th><th>${c.customer_type === "remittance" ? "To" : "From"}</th><th class="amt">Amount</th><th>Energy</th><th>Status</th></tr></thead><tbody>
              ${c.recent.map((r) => `<tr><td>${esc((r.created_at || "").replace("T", " ").slice(0, 16))}</td>
                <td>${addrHtml(c.customer_type === "remittance" ? r.to_address : r.from_address)}</td>
                <td class="amt num">${fmtUsdt(r.amount)} USDT</td><td>${statusBadge(r.status)}</td></tr>`).join("")}</tbody></table></div>`
@@ -1075,7 +1094,7 @@ function depositsPanel(rows, title){
     <td>${statusBadge(m.status)}</td>
     <td class="row-actions"><button class="btn btn-ghost btn-sm" data-receipt="${m.id}">Receipt</button></td></tr>`).join("");
   return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div><div class="panel-body flush">
-    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>From</th><th class="amt">Amount</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No deposits yet.")}</div></div>`;
+    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>From</th><th class="amt">Amount</th><th>Energy</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No deposits yet.")}</div></div>`;
 }
 function transfersPanel(rows, title){
   const body = (rows||[]).map(r => `<tr>
@@ -1085,7 +1104,7 @@ function transfersPanel(rows, title){
     <td>${statusBadge(r.status)}</td>
     <td class="row-actions">${r.tx_hash ? `<button class="btn btn-ghost btn-sm" data-receipt-tx="${esc(r.tx_hash)}">Receipt</button>` : "—"}</td></tr>`).join("");
   return `<div class="panel"><div class="panel-head"><h2>${esc(title)}</h2></div><div class="panel-body flush">
-    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>To</th><th class="amt">Amount</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No transfers yet.")}</div></div>`;
+    ${body ? `<table><thead><tr><th>Date (UTC)</th><th>To</th><th class="amt">Amount</th><th>Energy</th><th>Status</th><th></th></tr></thead><tbody>${body}</tbody></table>` : emptyState("No transfers yet.")}</div></div>`;
 }
 
 /* ---------- CSV export helper ---------- */
@@ -1352,8 +1371,9 @@ async function renderTransactions(){
       <input type="file" id="txImportFile" accept=".json,.csv,application/json,text/csv" style="display:none">
     </div>` : ""}</div><div id="txBody">Loading…</div>`;
   if (isAdmin) {
-    $("#txExport").onclick = () => downloadCsv("/transactions.csv", "transactions.csv");
-    $("#txExportJson").onclick = () => downloadCsv("/transactions.json", "transactions.json");
+    const txExportQs = () => { const q = []; if (txAddr) q.push("address=" + encodeURIComponent(txAddr)); if (txFrom) q.push("from=" + txFrom); if (txTo) q.push("to=" + txTo); return q.length ? "?" + q.join("&") : ""; };
+    $("#txExport").onclick = () => downloadCsv("/transactions.csv" + txExportQs(), "transactions.csv");
+    $("#txExportJson").onclick = () => downloadCsv("/transactions.json" + txExportQs(), "transactions.json");
     const f = $("#txImportFile");
     $("#txImport").onclick = () => f.click();
     f.onchange = async () => {
@@ -1378,13 +1398,20 @@ async function renderTransactions(){
       try { customers = await api("/customers"); } catch(e){}
       try { walletsList = await api("/wallets"); } catch(e){}
     }
-    const qs = [];
-    if (txAddr) qs.push("address=" + encodeURIComponent(txAddr));
-    else if (txFilterUser) qs.push("user_id=" + encodeURIComponent(txFilterUser));
-    if (txFrom) qs.push("from=" + txFrom);
-    if (txTo) qs.push("to=" + txTo);
-    qs.push(txAddr ? "limit=all" : "limit=2000");
-    const rows = await api("/transactions" + (qs.length ? "?" + qs.join("&") : ""));
+    const PAGE = 100;
+    let rows = [];
+    const baseQs = () => { const q = []; if (txAddr) q.push("address=" + encodeURIComponent(txAddr)); else if (txFilterUser) q.push("user_id=" + encodeURIComponent(txFilterUser)); if (txFrom) q.push("from=" + txFrom); if (txTo) q.push("to=" + txTo); return q; };
+    async function loadMore() {
+      const q = baseQs(); q.push("limit=" + PAGE); if (rows.length) q.push("before=" + rows[rows.length - 1].id);
+      const page = await api("/transactions?" + q.join("&"));
+      rows = rows.concat(page);
+      const more = page.length === PAGE;
+      const foot = more
+        ? `<div style="text-align:center;margin-top:12px"><button id="txMore" class="btn btn-ghost btn-sm">Load older</button></div>`
+        : (rows.length ? `<div class="hint" style="text-align:center;margin-top:10px">End of history — ${rows.length} shown</div>` : "");
+      $("#txList").innerHTML = txTable(rows, isAdmin) + foot;
+      const mb = $("#txMore"); if (mb) mb.onclick = () => withBusy(mb, "Loading…", loadMore);
+    }
     const filter = isAdmin ? `<div class="panel"><div class="panel-body"><div class="field" style="margin:0">
       <label>Filter by user</label>
       <select id="txUser" class="input"><option value="">Everyone</option>
@@ -1411,7 +1438,8 @@ async function renderTransactions(){
         </select></div>
       <div class="form-actions"><button id="rcWalletGo" class="btn btn-ghost btn-sm">Reconcile selected wallet</button><button id="rcAll" class="btn btn-ghost btn-sm">Reconcile all wallets</button></div>
       </div></div>` : "";
-    $("#txBody").innerHTML = filter + txTable(rows, isAdmin);
+    $("#txBody").innerHTML = filter + `<div id="txList">Loading…</div>`;
+    await loadMore();
     if (isAdmin) {
       $("#txUser").onchange = (e) => { txFilterUser = e.target.value || null; renderTransactions(); };
       const af = $("#txApply"); if (af) af.onclick = () => { txFrom = $("#txFrom").value || ""; txTo = $("#txTo").value || ""; renderTransactions(); };
@@ -1437,11 +1465,12 @@ function txTable(rows, showWho){
     <td>${addrHtml(m.from_address)}</td><td>${addrHtml(m.to_address)}</td>
     <td>${m.customer?`<span class="role-pill">${esc(m.customer)}</span>`:"—"}</td>
     <td class="amt num">${fmtUsdt(m.amount)} ${esc(m.token)}${m.amount_usd!=null?`<div class="r-sub">$${fmtUsdt(m.amount_usd)}</div>`:""}</td>
+    <td class="num">${m.energy?Number(m.energy).toLocaleString():"—"}</td>
     <td>${statusBadge(m.status)}</td>
     ${showWho?`<td>${esc(m.initiated_by_name||"—")}</td>`:""}
     <td class="row-actions"><button class="btn btn-ghost btn-sm" data-receipt="${m.id}">Receipt</button></td></tr>`).join("");
   return `<div class="panel"><div class="panel-head"><h2>History <span class="cnt">${(rows||[]).length}</span></h2></div>
-    <div class="panel-body flush">${body ? `<div class="tbl-wrap"><table><thead><tr><th>Date (UTC)</th><th>Type</th><th>From</th><th>To</th><th>Customer</th><th class="amt">Amount</th><th>Status</th>${showWho?"<th>By</th>":""}<th></th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState("No transactions.")}</div></div>`;
+    <div class="panel-body flush">${body ? `<div class="tbl-wrap"><table><thead><tr><th>Date (UTC)</th><th>Type</th><th>From</th><th>To</th><th>Customer</th><th class="amt">Amount</th><th>Energy</th><th>Status</th>${showWho?"<th>By</th>":""}<th></th></tr></thead><tbody>${body}</tbody></table></div>` : emptyState("No transactions.")}</div></div>`;
 }
 
 /* ---------- address book (admin/staff) ---------- */
@@ -1559,6 +1588,7 @@ async function renderSettings(){
         <div class="hint">TronZap: create an API token + secret at dash.tronzap.com and fund your TronZap balance. Energy is auto-rented (~65k) before each payout — fully gas-free. Can also be set via env TRONZAP_API_TOKEN / TRONZAP_API_SECRET.</div></div>
       <div class="field"><label>TronZap API token</label><input id="cfgTzToken" class="input" value="${esc(c.tronzap_api_token||'')}" placeholder="from dash.tronzap.com"></div>
       <div class="field"><label>TronZap API secret</label><input id="cfgTzSecret" class="input" value="${esc(c.tronzap_api_secret_masked||'')}" placeholder="${c.has_tronzap_secret?'saved — leave to keep':'from dash.tronzap.com'}"></div>
+      <div class="field"><label>TronZap bandwidth per transfer</label><input id="cfgTzBw" class="input" type="number" min="0" step="1" value="${Number(c.tronzap_bandwidth!=null?c.tronzap_bandwidth:345)}"><div class="hint">Rented with energy so transfers need zero TRX (345 ≈ one USDT transfer; 0 = energy only, relies on free daily bandwidth).</div></div>
       <div class="field"><label>Generic rental endpoint URL</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
       <div class="field"><label>Generic rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
       <div class="field"><label>Energy per transfer</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
@@ -1625,6 +1655,7 @@ async function renderSettings(){
         energy_provider: $("#cfgEnergyProvider") ? $("#cfgEnergyProvider").value : undefined,
         tronzap_api_token: $("#cfgTzToken") ? $("#cfgTzToken").value.trim() : undefined,
         tronzap_api_secret: ($("#cfgTzSecret") && !/[\u2022\u2026*]/.test($("#cfgTzSecret").value)) ? $("#cfgTzSecret").value.trim() : undefined,
+        tronzap_bandwidth: $("#cfgTzBw") ? (parseInt($("#cfgTzBw").value,10)||0) : undefined,
         energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),

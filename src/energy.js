@@ -10,7 +10,11 @@ async function tronzapRent(address, energy, opts = {}) {
   const token = opts.token, secret = opts.secret;
   if (!token || !secret) return { ok: false, error: "missing TronZap token/secret" };
   const baseUrl = (opts.baseUrl || "https://api.tronzap.com").replace(/\/+$/, "");
-  const payload = { service: "energy", params: { address, energy_amount: Number(energy), duration: Number(opts.duration || 1), activate_address: !!opts.activate } };
+  const params = { address, energy_amount: Number(energy), duration: Number(opts.duration || 1), activate_address: !!opts.activate };
+  // Rent bandwidth in the same order (resource bundle) so the transfer needs zero TRX even at volume.
+  // TronZap reports a bundle under service "energy" with a bandwidth_amount param.
+  if (opts.bandwidth && Number(opts.bandwidth) > 0) params.bandwidth_amount = Number(opts.bandwidth);
+  const payload = { service: "energy", params };
   if (opts.externalId) payload.external_id = String(opts.externalId);
   const body = JSON.stringify(payload);                       // sign the EXACT bytes we send
   const signature = crypto.createHash("sha256").update(body + secret).digest("hex");

@@ -13,7 +13,7 @@ const DEFAULTS = {
   usdt_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", // TRC-20 USDT (mainnet)
   sweep_min_usdt: 1.0,
   gas_fund_trx: 20.0,            // burn mode: TRX to top wallets up to, so TRON can burn it for energy
-  bandwidth_trx: 2.0,            // stake/rental mode: small TRX for bandwidth only (energy is delegated) — keeps real gas spend ~0
+  bandwidth_trx: 0.0,            // TRX to send for bandwidth when energy IS provisioned (0 = none; gas burns only when energy fails)
   disbursement_float_usdt: 500.0,
   max_disburse_usdt: 2000.0,
   poll_interval_seconds: 30,
@@ -47,6 +47,8 @@ const DEFAULTS = {
   tronzap_api_token: "",          // TronZap dashboard API token (or env TRONZAP_API_TOKEN)
   tronzap_api_secret: "",         // TronZap dashboard API secret — signs requests, never sent (or env TRONZAP_API_SECRET)
   tronzap_base_url: "",           // optional override; defaults to https://api.tronzap.com
+  tronzap_bandwidth: 345,         // bandwidth to rent alongside energy (0 = energy only; 345 covers one USDT transfer)
+  tronzap_activate: false,        // ask TronZap to activate brand-new destination addresses too
   energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
   energy_rental_api_key: "",      // rental mode: bearer token for the provider
   energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)

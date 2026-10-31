@@ -209,6 +209,15 @@ async function confirmTx(txid, { tries = 10, gapMs = 2000 } = {}) {
   return "pending"; // broadcast but not yet confirmed within the window
 }
 
+// Actual energy consumed by a confirmed transaction, from its on-chain receipt (null if unknown).
+async function txEnergyUsed(txid) {
+  if (!txid) return null;
+  const info = await limit(() => _getTxInfo(txid));
+  if (!info || !info.receipt) return null;
+  const e = info.receipt.energy_usage_total != null ? info.receipt.energy_usage_total : info.receipt.energy_usage;
+  return e == null ? null : Number(e);
+}
+
 // Sign an arbitrary message with the wallet's key (for Tronscan ownership proof).
 async function signMessage(privHex, message) {
   const tw = signer(String(privHex).replace(/^0x/, ""));
@@ -217,7 +226,7 @@ async function signMessage(privHex, message) {
 }
 
 // Route every network-touching function through the global throttle/queue.
-const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, listTrc20Transfers, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
+const _networkFns = { usdtBalance, nativeBalance, sendUsdt, sendNative, listIncomingUsdt, listTrc20Transfers, txEnergyUsed, setAccountName, swapUsdtToTrx, accountResources, freezeEnergy, unfreezeEnergy, delegateEnergy, undelegateEnergy };
 const _throttled = {};
 for (const [k, f] of Object.entries(_networkFns)) _throttled[k] = (...args) => limit(() => f(...args));
 // newWallet / addressFromPrivateKey / signMessage are local (no network) — left unthrottled.

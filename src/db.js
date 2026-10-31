@@ -20,7 +20,7 @@ const SQLITE_SCHEMA = `
   CREATE TABLE IF NOT EXISTS movements (
     id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, chain TEXT DEFAULT 'tron', token TEXT DEFAULT 'USDT',
     from_address TEXT, to_address TEXT, amount TEXT NOT NULL, tx_hash TEXT, status TEXT DEFAULT 'pending',
-    wallet_id INTEGER, initiated_by INTEGER, note TEXT DEFAULT '', usd_rate TEXT, created_at TEXT NOT NULL, confirmed_at TEXT);
+    wallet_id INTEGER, initiated_by INTEGER, note TEXT DEFAULT '', usd_rate TEXT, energy TEXT, created_at TEXT NOT NULL, confirmed_at TEXT);
   CREATE TABLE IF NOT EXISTS customer_whitelist (
     id INTEGER PRIMARY KEY AUTOINCREMENT, customer_id INTEGER NOT NULL, address TEXT NOT NULL, label TEXT DEFAULT '',
     is_active INTEGER NOT NULL DEFAULT 1, created_by INTEGER, created_at TEXT NOT NULL);
@@ -55,7 +55,7 @@ function makeSqlite() {
   db.exec(SQLITE_SCHEMA);
   const col = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
   const add = (t, c, d) => { if (!col(t).includes(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); };
-  add("movements", "usd_rate", "TEXT");
+  add("movements", "usd_rate", "TEXT"); add("movements", "energy", "TEXT");
   add("users", "customer_type", "TEXT"); add("users", "auto_approve_limit", "REAL");
   add("users", "phone", "TEXT"); add("users", "pay_token", "TEXT");
   add("disbursement_requests", "customer_id", "INTEGER"); add("disbursement_requests", "idempotency_key", "TEXT");
@@ -96,8 +96,11 @@ async function makeMysql() {
     catch (e) { lastErr = e; console.log(`[db] waiting for MySQL (${e.code || e.message})...`); await new Promise((r) => setTimeout(r, 3000)); }
   }
   if (!conn) throw lastErr;
-  try { for (const stmt of schema.split(";").map((s) => s.trim()).filter(Boolean)) await conn.query(stmt); }
-  finally { conn.release(); }
+  try {
+    for (const stmt of schema.split(";").map((s) => s.trim()).filter(Boolean)) await conn.query(stmt);
+    // idempotent migrations for existing databases
+    try { await conn.query("ALTER TABLE movements ADD COLUMN energy VARCHAR(20)"); } catch (e) { /* already exists */ }
+  } finally { conn.release(); }
   // SQLite-isms -> MySQL: null-safe equality, and CAST(x AS REAL) (unsupported in MySQL).
   const fix = (sql) => sql.replace(/ IS \?/g, " <=> ?").replace(/ AS REAL\)/g, " AS DECIMAL(38,8))");
   return {

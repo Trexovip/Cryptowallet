@@ -26,6 +26,7 @@ module.exports = {
   async nativeBalance(addr) { return trx[addr] || 0; },
   async listIncomingUsdt(addr) { return incoming[addr] || []; },
   async listTrc20Transfers(addr) { return _transfers.filter((x) => x.from === addr || x.to === addr); },
+  async txEnergyUsed() { return 64285; },
   addressFromPrivateKey(pk) { try { return addrFromPk(String(pk).replace(/^0x/, "")); } catch { return null; } },
   async setAccountName(pk, name) { try { names[addrFromPk(String(pk).replace(/^0x/, ""))] = name; } catch {} return txid(); },
   async signMessage(pk, message) { return "0x" + crypto.createHash("sha256").update(String(pk) + "|" + message).digest("hex"); },

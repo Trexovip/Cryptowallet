@@ -365,8 +365,10 @@ pays). The platform's own gas is handled automatically:
   ```
   The client POSTs `{ "address": "<wallet>", "energy": <amount> }` with `Authorization: Bearer <key>`
   and treats any 2xx as success. (Alternatively, switch to self-staked energy in Settings and freeze TRX.)
-- When energy is provisioned, wallets receive only a tiny **bandwidth** top-up (`bandwidth_trx`,
-  default 2) instead of a full burn top-up — keeping real TRX spend ~0.
+- When energy is provisioned (TronZap/stake), **no TRX is spent on gas at all** — the transfer uses the
+  rented/delegated energy and free daily bandwidth. TRX is burned for gas **only if energy provisioning
+  fails** (fallback so payouts never stall). `bandwidth_trx` defaults to 0; raise it only if high-volume
+  wallets hit bandwidth limits.
 
 ### TronZap (built-in, recommended)
 
@@ -387,6 +389,19 @@ token is present. The secret is only used to sign requests and is never transmit
 > makes the platform use the cheapest configured source automatically and always keeps payouts working;
 > plug in a rental key (or stake) and payouts become gas-free with no other setup. A brand-new address
 > also needs a one-time ~1 TRX activation.
+
+## Energy per transaction & wallet history
+
+- **Energy per transaction:** each payout records the energy it consumes (~65,000 for a standard USDT
+  transfer; the configured per-transfer amount). It shows in an **Energy** column on the Transactions
+  page and in CSV/JSON exports.
+- **Import fetches full history:** importing a wallet (single or bulk) or assigning a deposit wallet to a
+  customer automatically pulls that address's on-chain USDT history from Tronscan/TronGrid and backfills
+  any missing deposits (deposit wallets) or payouts (pool/treasury wallets). Single import/assign return
+  a `history` summary; bulk import backfills in the background.
+- **Search a payout address + export:** on the Transactions page, search by any address (in/out, all
+  wallets, no row limit), then **Export CSV / Export JSON** — the export honors the current address and
+  date filters, so you get every transaction sent to/from that address.
 
 ## Transaction history, address search & on-chain reconciliation
 

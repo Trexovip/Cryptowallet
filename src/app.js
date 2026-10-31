@@ -32,7 +32,7 @@ async function canAccessCustomer(user, customerId) {
   return false;
 }
 const walletOut = (w) => ({ id: w.id, chain: w.chain, address: w.address, wtype: w.wtype, label: w.label, owner_user_id: w.owner_user_id, is_active: !!w.is_active });
-const moveOut = (m) => ({ id: m.id, kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, tx_hash: m.tx_hash, status: m.status, usd_rate: m.usd_rate, created_at: m.created_at });
+const moveOut = (m) => ({ id: m.id, kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, tx_hash: m.tx_hash, status: m.status, usd_rate: m.usd_rate, energy: m.energy, created_at: m.created_at });
 
 function explorerTx(network, hash) {
   if (!hash) return null;
@@ -404,7 +404,7 @@ app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, re
   const body = req.body || {};
   const list = Array.isArray(body) ? body : (Array.isArray(body.wallets) ? body.wallets : null);
   if (!list) return res.status(400).json({ detail: "expected a wallets array or { wallets: [...] }" });
-  let imported = 0, skipped = 0; const errors = [];
+  let imported = 0, skipped = 0; const errors = []; const importedAddrs = [];
   for (const it of list) {
     try {
       const pk = String(it.private_key || it.privateKey || "").trim();
@@ -415,15 +415,17 @@ app.post("/wallets/import-bulk", currentUser, adminRequired, wrap(async (req, re
       let ownerId = null;
       const ownerName = it.owner || it.owner_username;
       if (ownerName) { const u = (await getDb().prepare("SELECT id FROM users WHERE username=?").get(String(ownerName))); if (u) ownerId = u.id; }
-      await svc.importWallet(pk, wtype, ownerId, String(it.label || ""), false);
-      imported++;
+      const iw = await svc.importWallet(pk, wtype, ownerId, String(it.label || ""), false);
+      imported++; importedAddrs.push(iw.address);
     } catch (e) {
       if (String(e.message).includes("already exists")) skipped++;
       else errors.push(e.message);
     }
   }
   svc.audit(req.user.id, "import_all_wallets", `imported ${imported}, skipped ${skipped}`, ip(req));
-  res.json({ imported, skipped, errors });
+  res.json({ imported, skipped, errors, history: "fetching on-chain history in background" });
+  // backfill each imported wallet's history from the chain, without blocking the response
+  for (const a of importedAddrs) svc.reconcileWallet(a).catch(() => {});
 }));
 
 // Top up the gas wallet by swapping USDT (from treasury) to TRX (admin).
@@ -535,7 +537,9 @@ app.post("/wallets/:id/assign", currentUser, adminRequired, wrap(async (req, res
   }
   (await getDb().prepare("UPDATE wallets SET owner_user_id=? WHERE id=?").run(u ? u.id : null, w.id));
   svc.audit(req.user.id, "assign_wallet", `${w.address} -> ${u ? u.username : "unassigned"}`, ip(req));
-  res.json({ ok: true, address: w.address, owner: u ? u.username : null });
+  let history = null;
+  try { history = await svc.reconcileWallet(w.address); } catch (e) { /* best-effort */ }
+  res.json({ ok: true, address: w.address, owner: u ? u.username : null, history });
 }));
 
 // Import an existing private key as a wallet (admin only).
@@ -574,7 +578,9 @@ app.post("/wallets/import", currentUser, adminRequired, wrap(async (req, res) =>
   }
   const w = await svc.importWallet(String(private_key), wtype, owner, String(label || "imported"));
   svc.audit(req.user.id, "import_wallet", `${wtype} ${w.address}`, ip(req));
-  res.json(walletOut(w));
+  let history = null; // fetch this wallet's on-chain history from Tronscan/TronGrid and backfill
+  try { history = await svc.reconcileWallet(w.address); } catch (e) { /* best-effort */ }
+  res.json({ ...walletOut(w), history });
 }));
 
 // Total liquidity available for payouts (treasury + pool), admin/staff.
@@ -893,6 +899,8 @@ app.get("/admin/config", currentUser, adminRequired, async (_req, res) => {
     tronzap_api_secret_masked: maskKey(c.tronzap_api_secret || ""),
     has_tronzap_secret: !!c.tronzap_api_secret,
     tronzap_base_url: c.tronzap_base_url || "",
+    tronzap_bandwidth: Number(c.tronzap_bandwidth != null ? c.tronzap_bandwidth : 345),
+    tronzap_activate: !!c.tronzap_activate,
     energy_delegate_trx: Number(c.energy_delegate_trx || 0),
     energy_rental_url: c.energy_rental_url || "",
     energy_rental_api_key: c.energy_rental_api_key || "",
@@ -932,6 +940,8 @@ app.post("/admin/config", currentUser, adminRequired, async (req, res) => {
   if (b.tronzap_api_token !== undefined) c.tronzap_api_token = String(b.tronzap_api_token || "").trim();
   if (b.tronzap_api_secret !== undefined && String(b.tronzap_api_secret||"").trim() && !/[\u2022\u2026*]/.test(String(b.tronzap_api_secret))) c.tronzap_api_secret = String(b.tronzap_api_secret).trim();
   if (b.tronzap_base_url !== undefined) c.tronzap_base_url = String(b.tronzap_base_url || "").trim();
+  if (b.tronzap_bandwidth !== undefined) c.tronzap_bandwidth = Math.max(0, Number(b.tronzap_bandwidth) || 0);
+  if (b.tronzap_activate !== undefined) c.tronzap_activate = !!b.tronzap_activate;
   if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
@@ -1051,19 +1061,32 @@ app.post("/api/v1/payouts", apiAuth, requireScope("payouts"), wrap(async (req, r
 
 // ---------------- CSV export (admin) ----------------
 function csvEscape(v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
-app.get("/transactions.csv", currentUser, adminRequired, async (_req, res) => {
-  const rows = (await getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 10000").all());
+// Build a movements query from export/search filters (address, from, to).
+function txExportQuery(q, cap) {
+  const w = [], p = [];
+  const addr = (q.address || "").trim();
+  if (addr) { w.push("(from_address=? OR to_address=?)"); p.push(addr, addr); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(q.from || "")) { w.push("substr(created_at,1,10) >= ?"); p.push(q.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(q.to || "")) { w.push("substr(created_at,1,10) <= ?"); p.push(q.to); }
+  const where = w.length ? "WHERE " + w.join(" AND ") : "";
+  return { sql: `SELECT * FROM movements ${where} ORDER BY id DESC LIMIT ${cap}`, params: p };
+}
+
+app.get("/transactions.csv", currentUser, adminRequired, async (req, res) => {
+  const { sql, params } = txExportQuery(req.query, 1000000);
+  const rows = (await getDb().prepare(sql).all(...params));
   const who = await custLookup(getDb(), rows);
-  const head = ["id", "created_at", "kind", "token", "from_address", "to_address", "amount", "usd_rate", "status", "tx_hash", "initiated_by", "customer"];
-  const lines = [head.join(",")].concat(await Promise.all(rows.map(async (m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.status, m.tx_hash, await userName(m.initiated_by), who(m) || ""].map(csvEscape).join(","))));
+  const head = ["id", "created_at", "kind", "token", "from_address", "to_address", "amount", "usd_rate", "energy", "status", "tx_hash", "initiated_by", "customer"];
+  const lines = [head.join(",")].concat(await Promise.all(rows.map(async (m) => [m.id, m.created_at, m.kind, m.token, m.from_address, m.to_address, m.amount, m.usd_rate, m.energy || "", m.status, m.tx_hash, await userName(m.initiated_by), who(m) || ""].map(csvEscape).join(","))));
   res.set("Content-Type", "text/csv").set("Content-Disposition", "attachment; filename=transactions.csv").send(lines.join("\n"));
 });
 
 // Export the ledger as JSON (admin).
 app.get("/transactions.json", currentUser, adminRequired, async (req, res) => {
-  const raw = (await getDb().prepare("SELECT * FROM movements ORDER BY id DESC LIMIT 100000").all());
+  const { sql, params } = txExportQuery(req.query, 1000000);
+  const raw = (await getDb().prepare(sql).all(...params));
   const who = await custLookup(getDb(), raw);
-  const rows = await Promise.all(raw.map(async (m) => ({ kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: await userName(m.initiated_by), customer: who(m) || "" })));
+  const rows = await Promise.all(raw.map(async (m) => ({ kind: m.kind, token: m.token, from_address: m.from_address, to_address: m.to_address, amount: m.amount, usd_rate: m.usd_rate, energy: m.energy, status: m.status, tx_hash: m.tx_hash, note: m.note, created_at: m.created_at, initiated_by: await userName(m.initiated_by), customer: who(m) || "" })));
   svc.audit(req.user.id, "export_transactions", `${rows.length} rows`, ip(req));
   res.set("Content-Type", "application/json").set("Content-Disposition", "attachment; filename=transactions.json")
      .send(JSON.stringify({ exported_at: new Date().toISOString(), network: config.get().tron_network, transactions: rows }, null, 2));
@@ -1079,7 +1102,7 @@ app.post("/transactions/import", currentUser, adminRequired, wrap(async (req, re
   const existsTx = db.prepare("SELECT 1 FROM movements WHERE tx_hash=? AND kind=? AND amount=?");
   const existsNoTx = db.prepare("SELECT 1 FROM movements WHERE kind=? AND from_address IS ? AND to_address IS ? AND amount=? AND created_at=?");
   const ins = db.prepare("INSERT INTO movements(kind,chain,token,from_address,to_address,amount,tx_hash,status,wallet_id,initiated_by,note,usd_rate,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
-  let imported = 0, skipped = 0; const errors = [];
+  let imported = 0, skipped = 0; const errors = []; const importedAddrs = [];
   for (const r of rows) {
     try {
       const kind = String(r.kind || "").trim();
@@ -1428,8 +1451,9 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
       db.prepare("SELECT * FROM wallets WHERE wtype='disbursement' AND is_active=1").all(),
     ]);
     const since24 = new Date(Date.now() - 86400000).toISOString();
+    const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM for "energy this month"
     // all balance reads + aggregates run in parallel (chain reads still rate-limited by the throttle)
-    const [treUsdt, feeBal, poolUsdts, staffCount, depCount, pending, dep24, pay24, failed24] = await Promise.all([
+    const [treUsdt, feeBal, poolUsdts, staffCount, depCount, pending, dep24, pay24, failed24, energyMonth] = await Promise.all([
       treasury ? safeUsdt(treasury.address) : null,
       fee ? Promise.all([safeUsdt(fee.address), safeNative(fee.address)]) : [null, null],
       Promise.all(pool.map((w) => safeUsdt(w.address))),
@@ -1439,6 +1463,7 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
       db.prepare("SELECT COUNT(*) c, COALESCE(SUM(CAST(amount AS REAL)),0) v FROM movements WHERE kind='deposit_in' AND token='USDT' AND created_at>=?").get(since24),
       db.prepare("SELECT COUNT(*) c, COALESCE(SUM(CAST(amount AS REAL)),0) v FROM movements WHERE kind='disburse_out' AND token='USDT' AND created_at>=?").get(since24),
       db.prepare("SELECT COUNT(*) c FROM movements WHERE kind IN ('disburse_out','treasury_out') AND status='failed' AND created_at>=?").get(since24),
+      db.prepare("SELECT COALESCE(SUM(CAST(energy AS REAL)),0) e FROM movements WHERE kind IN ('disburse_out','treasury_out') AND substr(created_at,1,7)=?").get(monthKey),
     ]);
     const poolOut = pool.map((w, i) => ({ id: w.id, address: w.address, usdt: poolUsdts[i] }));
     const gasMin = Number(config.get().gas_fund_trx || 20);
@@ -1450,6 +1475,7 @@ app.get("/dashboard", currentUser, wrap(async (req, res) => {
       pool: poolOut,
       staff_count: staffCount.c, deposit_wallet_count: depCount.c, pending_approvals: pending.c,
       today: { deposits: { count: dep24.c, volume: Number(dep24.v) }, payouts: { count: pay24.c, volume: Number(pay24.v) }, failed_payouts: failed24.c },
+      energy_month: Number(energyMonth.e || 0),
       alerts: {
         low_gas: feeNative != null && Number(feeNative) < gasMin,
         gas_min: gasMin,
