@@ -1121,6 +1121,15 @@ async function downloadCsv(path, filename){
     toast("Export downloaded");
   }catch(e){ toast(e.message, true); }
 }
+function downloadRows(filename, headers, rows){
+  const q = (v) => { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const csv = [headers.join(",")].concat((rows || []).map(r => r.map(q).join(","))).join("\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  const a = document.createElement("a"); a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  toast("Export downloaded");
+}
 
 /* ---------- inline SVG bar chart (deposits vs payouts) ---------- */
 function barChartSVG(series){
@@ -1157,15 +1166,30 @@ async function showSecret(id){
 }
 
 /* ---------- reports (admin) ---------- */
+let repTab = "overview", repFrom = "", repTo = "", repCustDrill = null;
 async function renderReports(){
   const sec = $("#sec-reports");
-  sec.innerHTML = `<div class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
-    <div><h1>Reports</h1><p>Volumes, trends, and breakdowns.</p></div>
-    <button id="repExport" class="btn btn-ghost btn-sm">Export transactions CSV</button></div><div id="repBody">Loading…</div>`;
-  { const ex = $("#repExport"); if (ex) ex.onclick = () => downloadCsv("/transactions.csv", "transactions.csv"); }
+  sec.innerHTML = `<div class="page-head"><div><h1>Reports</h1><p>Volumes, trends, and per-customer / per-wallet breakdowns.</p></div></div>
+    <div class="tabbar" id="repTabs">
+      <button data-rtab="overview" class="${repTab==='overview'?'active':''}">Overview</button>
+      <button data-rtab="customer" class="${repTab==='customer'?'active':''}">Received by customer</button>
+      <button data-rtab="wallet" class="${repTab==='wallet'?'active':''}">By wallet</button>
+      <button data-rtab="deposits" class="${repTab==='deposits'?'active':''}">Deposit report</button>
+    </div>
+    <div id="repBody">Loading…</div>`;
+  sec.querySelectorAll("[data-rtab]").forEach(b => b.onclick = () => { repTab = b.getAttribute("data-rtab"); repCustDrill = null; renderReports(); });
+  const body = sec.querySelector("#repBody");
+  const dateBar = (idp) => `<div class="panel"><div class="panel-body"><div class="form-grid">
+     <div class="field" style="margin:0"><label>From (date)</label><input id="${idp}From" type="date" class="input" value="${repFrom}"></div>
+     <div class="field" style="margin:0"><label>To (date)</label><input id="${idp}To" type="date" class="input" value="${repTo}"></div>
+     <div class="field" style="margin:0;align-self:end"><div class="form-actions" style="margin:0"><button id="${idp}Apply" class="btn btn-primary btn-sm">Apply</button><button id="${idp}Clear" class="btn btn-ghost btn-sm">Clear</button></div></div>
+   </div></div></div>`;
+  const wireDates = (idp) => { const a=$("#"+idp+"Apply"); if(a)a.onclick=()=>{repFrom=$("#"+idp+"From").value||"";repTo=$("#"+idp+"To").value||"";renderReports();}; const c=$("#"+idp+"Clear"); if(c)c.onclick=()=>{repFrom="";repTo="";renderReports();}; };
+  const qsd = () => { const q=[]; if(repFrom)q.push("from="+repFrom); if(repTo)q.push("to="+repTo); return q.length?"?"+q.join("&"):""; };
   try{
-    const r = await api("/reports/summary?days=14");
-    sec.querySelector("#repBody").innerHTML = `
+    if (repTab === "overview") {
+      const r = await api("/reports/summary?days=14");
+      body.innerHTML = `
       <div class="readouts">
         <div class="readout"><div class="label">Deposits (total)</div><div class="value lead num">${fmtUsdt(r.deposits.volume)}<span class="unit">USDT</span></div><div class="foot">${r.deposits.count} deposits</div></div>
         <div class="readout"><div class="label">Payouts (total)</div><div class="value num">${fmtUsdt(r.payouts.volume)}<span class="unit">USDT</span></div><div class="foot">${r.payouts.count} payouts</div></div>
@@ -1175,10 +1199,56 @@ async function renderReports(){
         <div style="font-size:12px;color:var(--muted)"><span style="color:var(--accent-ink)">■</span> deposits &nbsp; <span style="color:var(--warn)">■</span> payouts</div></div>
         <div class="panel-body">${barChartSVG(r.series)}</div></div>
       <div class="panel"><div class="panel-head"><h2>Top customers by received</h2></div><div class="panel-body flush">
-        ${r.top_customers.length ? `<table><thead><tr><th>Customer</th><th class="amt">Received (USDT)</th><th class="amt">Transfers</th></tr></thead><tbody>${r.top_customers.map(c => `<tr><td>${esc(c.username)}</td><td class="amt num">${fmtUsdt(c.v)}</td><td class="amt num">${c.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No customer payouts yet.")}</div></div>
-      <div class="panel"><div class="panel-head"><h2>Payout volume by user</h2></div><div class="panel-body flush">
-        ${r.by_staff.length ? `<table><thead><tr><th>User</th><th class="amt">Paid out (USDT)</th><th class="amt">Payouts</th></tr></thead><tbody>${r.by_staff.map(s => `<tr><td>${esc(s.username)}</td><td class="amt num">${fmtUsdt(s.v)}</td><td class="amt num">${s.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No payouts yet.")}</div></div>`;
-  }catch(e){ sec.querySelector("#repBody").innerHTML = emptyState(e.message); }
+        ${r.top_customers.length ? `<table><thead><tr><th>Customer</th><th class="amt">Received (USDT)</th><th class="amt">Transfers</th></tr></thead><tbody>${r.top_customers.map(c => `<tr><td>${esc(c.username)}</td><td class="amt num">${fmtUsdt(c.v)}</td><td class="amt num">${c.c}</td></tr>`).join("")}</tbody></table>` : emptyState("No customer activity yet.")}</div></div>`;
+    }
+    else if (repTab === "customer" && repCustDrill) {
+      // drill-down: one customer's individual deposits
+      const c = repCustDrill;
+      const q = ["user_id=" + encodeURIComponent(c.id), "kind=deposit_in", "page_size=500"]; if (repFrom) q.push("from=" + repFrom); if (repTo) q.push("to=" + repTo);
+      const d = await api("/transactions/query?" + q.join("&"));
+      body.innerHTML = `<div class="panel"><div class="panel-head" style="display:flex;align-items:center;gap:10px">
+          <button id="rcBack" class="btn btn-ghost btn-sm">← Back</button><h2 style="margin:0">Deposits — ${esc(c.username)}</h2>
+          <button id="rcDrillCsv" class="btn btn-ghost btn-sm" style="margin-left:auto">Export CSV</button></div>
+        <div class="panel-body flush">
+          <div class="stat-row" style="padding:14px 16px"><div class="s"><div class="n num">${fmtUsdt(d.volume_in)}</div><div class="l">Total received (USDT)</div></div><div class="s"><div class="n num">${d.total.toLocaleString()}</div><div class="l">Deposits</div></div></div>
+          ${d.rows.length ? txTable(d.rows, false) : emptyState("No deposits in range.")}
+          ${d.total > d.rows.length ? `<div class="hint" style="text-align:center;padding:10px">Showing newest ${d.rows.length} of ${d.total.toLocaleString()} — use Export for all.</div>` : ""}
+        </div></div>`;
+      const bk = $("#rcBack"); if (bk) bk.onclick = () => { repCustDrill = null; renderReports(); };
+      const cs = $("#rcDrillCsv"); if (cs) cs.onclick = () => downloadCsv("/transactions.csv?user_id=" + encodeURIComponent(c.id) + "&kind=deposit_in" + (repFrom ? "&from=" + repFrom : "") + (repTo ? "&to=" + repTo : ""), "deposits-" + c.username + ".csv");
+    }
+    else if (repTab === "customer") {
+      const d = await api("/reports/by-customer" + qsd());
+      body.innerHTML = dateBar("rc") + `<div class="panel"><div class="panel-head"><h2>USDT received by customer</h2><button id="rcCsv" class="btn btn-ghost btn-sm">Export CSV</button></div><div class="panel-body flush">
+        <div class="stat-row" style="padding:14px 16px"><div class="s"><div class="n num">${fmtUsdt(d.grand_total)}</div><div class="l">Total received (USDT)</div></div><div class="s"><div class="n num">${d.customers}</div><div class="l">Customers</div></div></div>
+        ${d.rows.length ? `<table><thead><tr><th>Customer</th><th>Type</th><th class="amt">Received (USDT)</th><th class="amt">Deposits</th><th>Last deposit</th></tr></thead><tbody>${d.rows.map(r => `<tr class="click-row" data-cust="${r.customer_id}" data-cname="${esc(r.username)}"><td>${esc(r.username)}</td><td>${esc(r.customer_type||"-")}</td><td class="amt num">${fmtUsdt(r.total_received)}</td><td class="amt num">${r.deposits}</td><td>${r.last_deposit?esc(r.last_deposit.slice(0,10)):"-"}</td></tr>`).join("")}</tbody></table>` : emptyState("No deposits in range.")}</div></div>
+        <div class="hint" style="margin-top:8px">Tip: click a customer to see their individual deposits.</div>`;
+      wireDates("rc");
+      body.querySelectorAll("[data-cust]").forEach(tr => tr.onclick = () => { repCustDrill = { id: tr.getAttribute("data-cust"), username: tr.getAttribute("data-cname") }; renderReports(); });
+      const cs = $("#rcCsv"); if (cs) cs.onclick = () => downloadRows("received-by-customer.csv", ["customer","type","received_usdt","deposits","last_deposit"], d.rows.map(r => [r.username, r.customer_type, r.total_received, r.deposits, r.last_deposit || ""]));
+    }
+    else if (repTab === "wallet") {
+      const d = await api("/reports/by-wallet" + qsd());
+      body.innerHTML = dateBar("rw") + `<div class="panel"><div class="panel-head"><h2>Wallet-wise totals</h2><button id="rwCsv" class="btn btn-ghost btn-sm">Export CSV</button></div><div class="panel-body flush">
+        ${d.rows.length ? `<table><thead><tr><th>Wallet</th><th>Type</th><th>Owner</th><th class="amt">Received</th><th class="amt">Sent</th><th class="amt">Txns</th><th>Last activity</th></tr></thead><tbody>${d.rows.map(r => `<tr><td class="mono">${esc((r.label?r.label+" · ":"")+(r.address||"").slice(0,12))}…</td><td>${esc(r.wtype)}</td><td>${esc(r.owner||"-")}</td><td class="amt num">${fmtUsdt(r.received)}</td><td class="amt num">${fmtUsdt(r.sent)}</td><td class="amt num">${r.txs}</td><td>${r.last_activity?esc(r.last_activity.slice(0,10)):"-"}</td></tr>`).join("")}</tbody></table>` : emptyState("No wallets yet.")}</div></div>`;
+      wireDates("rw");
+      const cs = $("#rwCsv"); if (cs) cs.onclick = () => downloadRows("by-wallet.csv", ["address","type","owner","received","sent","txns","last_activity"], d.rows.map(r => [r.address, r.wtype, r.owner || "", r.received, r.sent, r.txs, r.last_activity || ""]));
+    }
+    else if (repTab === "deposits") {
+      const q = ["kind=deposit_in", "page_size=100"]; if (repFrom) q.push("from=" + repFrom); if (repTo) q.push("to=" + repTo);
+      const d = await api("/transactions/query?" + q.join("&"));
+      let trend = null; try { trend = await api("/reports/deposits-trend" + qsd()); } catch (e) {}
+      const expQs = (() => { const x = ["kind=deposit_in"]; if (repFrom) x.push("from=" + repFrom); if (repTo) x.push("to=" + repTo); return "?" + x.join("&"); })();
+      const trendPanel = trend && trend.series && trend.series.length ? `<div class="panel"><div class="panel-head"><h2>Daily deposits — ${esc(trend.from)} to ${esc(trend.to)}</h2><div style="font-size:12px;color:var(--muted)">${fmtUsdt(trend.total_volume)} USDT · ${trend.total_count} deposits</div></div><div class="panel-body">${barChartSVG(trend.series)}</div></div>` : "";
+      body.innerHTML = dateBar("rd") + trendPanel + `<div class="panel"><div class="panel-head"><h2>Deposit report</h2><span><button id="rdCsv" class="btn btn-ghost btn-sm">Export CSV</button> <button id="rdJson" class="btn btn-ghost btn-sm">Export JSON</button></span></div><div class="panel-body flush">
+        <div class="stat-row" style="padding:14px 16px"><div class="s"><div class="n num">${fmtUsdt(d.volume_in)}</div><div class="l">Total deposits (USDT)</div></div><div class="s"><div class="n num">${d.total.toLocaleString()}</div><div class="l">Deposit count</div></div></div>
+        ${d.rows.length ? txTable(d.rows, true) : emptyState("No deposits in range.")}</div></div>
+        ${d.total > d.rows.length ? `<div class="hint" style="text-align:center;margin-top:8px">Showing newest ${d.rows.length} of ${d.total.toLocaleString()} — narrow the date range or use Export for the full set.</div>` : ""}`;
+      wireDates("rd");
+      const cs = $("#rdCsv"); if (cs) cs.onclick = () => downloadCsv("/transactions.csv" + expQs, "deposits.csv");
+      const js = $("#rdJson"); if (js) js.onclick = () => downloadCsv("/transactions.json" + expQs, "deposits.json");
+    }
+  }catch(e){ body.innerHTML = emptyState(e.message); }
 }
 
 /* ---------- wallet naming ---------- */
@@ -1617,12 +1687,17 @@ async function renderSettings(){
         <select id="cfgEnergyProvider" class="input">
           <option value=""${(c.energy_provider||'')===''?' selected':''}>Generic rental URL (below)</option>
           <option value="tronzap"${c.energy_provider==='tronzap'?' selected':''}>TronZap (recommended — signed API)</option>
+          <option value="tronsave"${c.energy_provider==='tronsave'?' selected':''}>TronSave</option>
+          <option value="tenergy"${c.energy_provider==='tenergy'?' selected':''}>TEnergy (tenergy.me)</option>
         </select>
         <div class="hint">TronZap: create an API token + secret at dash.tronzap.com and fund your TronZap balance. Energy is auto-rented (~65k) before each payout — fully gas-free. Can also be set via env TRONZAP_API_TOKEN / TRONZAP_API_SECRET.</div></div>
       <div class="field"><label>TronZap API token</label><input id="cfgTzToken" class="input" value="${esc(c.tronzap_api_token||'')}" placeholder="from dash.tronzap.com"></div>
       <div class="field"><label>TronZap API secret</label><input id="cfgTzSecret" class="input" value="${esc(c.tronzap_api_secret_masked||'')}" placeholder="${c.has_tronzap_secret?'saved — leave to keep':'from dash.tronzap.com'}"></div>
       <div class="field"><label>TronZap bandwidth per transfer</label><input id="cfgTzBw" class="input" type="number" min="0" step="1" value="${Number(c.tronzap_bandwidth!=null?c.tronzap_bandwidth:345)}"><div class="hint">Rented with energy so transfers need zero TRX (345 ≈ one USDT transfer; 0 = energy only, relies on free daily bandwidth).</div></div>
       <label class="check" style="margin-top:8px"><input type="checkbox" id="cfgTzSmartBw" ${(c.tronzap_smart_bandwidth!==false)?"checked":""}> Only rent bandwidth when free bandwidth is insufficient (saves cost)</label>
+      <div class="field"><label>TronSave API key (failover provider)</label><input id="cfgTsKey" class="input" value="${esc(c.tronsave_api_key_masked||'')}" placeholder="${c.has_tronsave_key?'saved — leave to keep':'from tronsave.io'}"><div class="hint">Used automatically if TronZap is unavailable or its balance is empty. Get the apikey at tronsave.io → Account Info.</div></div>
+      <div class="field"><label>TEnergy API key (failover provider)</label><input id="cfgTeKey" class="input" value="${esc(c.tenergy_api_key||'')}" placeholder="ak_live_… from tenergy.me"></div>
+      <div class="field"><label>TEnergy API secret</label><input id="cfgTeSecret" class="input" value="${esc(c.tenergy_api_secret_masked||'')}" placeholder="${c.has_tenergy_secret?'saved — leave to keep':'sk_live_… from tenergy.me'}"><div class="hint">TEnergy routes to the cheapest connected provider. Used in the failover chain; signed with HMAC.</div></div>
       <div class="field"><label>Generic rental endpoint URL</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
       <div class="field"><label>Generic rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
       <div class="field"><label>Energy per transfer</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
@@ -1691,6 +1766,9 @@ async function renderSettings(){
         tronzap_api_secret: ($("#cfgTzSecret") && !/[\u2022\u2026*]/.test($("#cfgTzSecret").value)) ? $("#cfgTzSecret").value.trim() : undefined,
         tronzap_bandwidth: $("#cfgTzBw") ? (parseInt($("#cfgTzBw").value,10)||0) : undefined,
         tronzap_smart_bandwidth: $("#cfgTzSmartBw") ? $("#cfgTzSmartBw").checked : undefined,
+        tronsave_api_key: ($("#cfgTsKey") && !/[\u2022\u2026*]/.test($("#cfgTsKey").value)) ? $("#cfgTsKey").value.trim() : undefined,
+        tenergy_api_key: $("#cfgTeKey") ? $("#cfgTeKey").value.trim() : undefined,
+        tenergy_api_secret: ($("#cfgTeSecret") && !/[\u2022\u2026*]/.test($("#cfgTeSecret").value)) ? $("#cfgTeSecret").value.trim() : undefined,
         energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),

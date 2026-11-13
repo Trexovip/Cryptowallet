@@ -105,37 +105,48 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function ensureEnergy(wallet) {
   const mode = get().energy_mode || "auto";
   if (mode === "burn" || !wallet) return false;
-  const rentalAmt = Number(process.env.ENERGY_RENTAL_AMOUNT || get().energy_rental_amount || 65000);
-  const delegateTrx = Number(get().energy_delegate_trx || 0);
-  // TronZap credentials (env takes precedence so it works with zero in-app config)
-  const tzToken = process.env.TRONZAP_API_TOKEN || get().tronzap_api_token || "";
-  const tzSecret = process.env.TRONZAP_API_SECRET || get().tronzap_api_secret || "";
-  const provider = process.env.ENERGY_PROVIDER || get().energy_provider || (tzToken && tzSecret ? "tronzap" : "");
-  const rentalUrl = process.env.ENERGY_RENTAL_URL || get().energy_rental_url || "";
-  const rentalKey = process.env.ENERGY_RENTAL_API_KEY || get().energy_rental_api_key || "";
-  try {
-    if ((mode === "rental" || mode === "auto") && provider === "tronzap" && tzToken && tzSecret) {
-      let bandwidth = Number(process.env.TRONZAP_BANDWIDTH != null ? process.env.TRONZAP_BANDWIDTH : (get().tronzap_bandwidth != null ? get().tronzap_bandwidth : 345));
-      // Smart: only pay to rent bandwidth when the wallet's free/own bandwidth can't cover the transfer.
-      if (bandwidth > 0 && get().tronzap_smart_bandwidth !== false) {
-        let avail = 0; try { avail = await chain.availableBandwidth(wallet.address); } catch { avail = 0; }
-        if (avail >= bandwidth) bandwidth = 0; // free bandwidth is enough — don't rent
-      }
-      const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tzToken, secret: tzSecret, baseUrl: process.env.TRONZAP_BASE_URL || get().tronzap_base_url, bandwidth, activate: !!get().tronzap_activate, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
-      if (!r.ok) console.log("[energy] TronZap rent failed:", r.error);
-      return !!r.ok;
-    }
-    if ((mode === "rental" || mode === "auto") && rentalUrl) {
-      const r = await energy.genericRent(wallet.address, rentalAmt, { url: rentalUrl, apiKey: rentalKey });
-      return !!r.ok;
-    }
-    if ((mode === "stake" || mode === "auto") && delegateTrx > 0) {
-      const fee = await getFee(); if (!fee) return false;
-      const feePk = sec.decryptSecret(fee.enc_privkey);
-      await chain.delegateEnergy(feePk, wallet.address, delegateTrx, false);
-      return true;
-    }
-  } catch (e) { /* best-effort: fall back to burning TRX below */ }
+  const cfg = get();
+  const rentalAmt = Number(process.env.ENERGY_RENTAL_AMOUNT || cfg.energy_rental_amount || 65000);
+  const delegateTrx = Number(cfg.energy_delegate_trx || 0);
+  const tz = _tzCreds();
+  const tsKey = process.env.TRONSAVE_API_KEY || cfg.tronsave_api_key || "";
+  const genericUrl = process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url || "";
+  const genericKey = process.env.ENERGY_RENTAL_API_KEY || cfg.energy_rental_api_key || "";
+  const forced = (process.env.ENERGY_PROVIDER || cfg.energy_provider || "").trim(); // "" = auto (try all)
+  const want = (name) => !forced || forced === name;
+  const rentAllowed = (mode === "rental" || mode === "auto");
+  const stakeAllowed = (mode === "stake" || mode === "auto");
+  // Ordered provider chain with automatic failover: the first one that succeeds wins; if all fail,
+  // the caller falls back to burning TRX. Priority: TronZap -> TronSave -> generic rental -> self-stake.
+  const chainFns = [];
+  if (rentAllowed && want("tronzap") && tz.token && tz.secret) chainFns.push(["TronZap", async () => {
+    let bandwidth = Number(process.env.TRONZAP_BANDWIDTH != null ? process.env.TRONZAP_BANDWIDTH : (cfg.tronzap_bandwidth != null ? cfg.tronzap_bandwidth : 345));
+    if (bandwidth > 0 && cfg.tronzap_smart_bandwidth !== false) { let avail = 0; try { avail = await chain.availableBandwidth(wallet.address); } catch { avail = 0; } if (avail >= bandwidth) bandwidth = 0; }
+    const r = await energy.tronzapRent(wallet.address, rentalAmt, { token: tz.token, secret: tz.secret, baseUrl: process.env.TRONZAP_BASE_URL || cfg.tronzap_base_url, bandwidth, activate: !!cfg.tronzap_activate, externalId: "w" + (wallet.id || "") + "-" + Date.now() });
+    return r.ok ? true : (console.log("[energy] TronZap failed:", r.error), false);
+  }]);
+  if (rentAllowed && want("tronsave") && tsKey) chainFns.push(["TronSave", async () => {
+    const r = await energy.tronsaveRent(wallet.address, rentalAmt, { apiKey: tsKey, baseUrl: process.env.TRONSAVE_BASE_URL || cfg.tronsave_base_url });
+    return r.ok ? true : (console.log("[energy] TronSave failed:", r.error), false);
+  }]);
+  const teKey = process.env.TENERGY_API_KEY || cfg.tenergy_api_key || "";
+  const teSecret = process.env.TENERGY_API_SECRET || cfg.tenergy_api_secret || "";
+  const teBase = process.env.TENERGY_BASE_URL || cfg.tenergy_base_url || (cfg.tron_network === "nile" ? "https://api-nile.tenergy.me" : "https://api.tenergy.me");
+  if (rentAllowed && want("tenergy") && teKey && teSecret) chainFns.push(["TEnergy", async () => {
+    const r = await energy.tenergyRent(wallet.address, rentalAmt, { apiKey: teKey, apiSecret: teSecret, baseUrl: teBase, activate: !!cfg.tronzap_activate, clientOrderId: "w" + (wallet.id || "") + "-" + Date.now() });
+    return r.ok ? true : (console.log("[energy] TEnergy failed:", r.error), false);
+  }]);
+  if (rentAllowed && want("generic") && genericUrl) chainFns.push(["generic", async () => {
+    const r = await energy.genericRent(wallet.address, rentalAmt, { url: genericUrl, apiKey: genericKey });
+    return !!r.ok;
+  }]);
+  if (stakeAllowed && delegateTrx > 0) chainFns.push(["stake", async () => {
+    const fee = await getFee(); if (!fee) return false;
+    const feePk = sec.decryptSecret(fee.enc_privkey);
+    await chain.delegateEnergy(feePk, wallet.address, delegateTrx, false);
+    return true;
+  }]);
+  for (const [name, fn] of chainFns) { try { if (await fn()) return true; } catch (e) { console.log("[energy] " + name + " error:", e.message); } }
   return false;
 }
 
@@ -383,32 +394,47 @@ async function payoutReadiness(force = false) {
   let gasTrx = 0; try { if (fee) gasTrx = await chain.nativeBalance(fee.address); } catch { gasTrx = 0; }
   const gasFund = Number(cfg.gas_fund_trx || 20);
   const gasOk = gasTrx >= gasFund;
-  const { token, secret, provider } = _tzCreds();
-  const usesTz = (mode === "auto" || mode === "rental") && provider === "tronzap" && token && secret;
+  const rentAllowed = (mode === "auto" || mode === "rental");
+  const forced = (process.env.ENERGY_PROVIDER || cfg.energy_provider || "").trim();
+  const { token, secret } = _tzCreds();
+  const tsKey = process.env.TRONSAVE_API_KEY || cfg.tronsave_api_key || "";
+  const teKey = process.env.TENERGY_API_KEY || cfg.tenergy_api_key || "";
+  const teSecret = process.env.TENERGY_API_SECRET || cfg.tenergy_api_secret || "";
+  const usesTz = rentAllowed && (!forced || forced === "tronzap") && token && secret;
+  const usesTs = rentAllowed && (!forced || forced === "tronsave") && tsKey;
+  const usesTe = rentAllowed && (!forced || forced === "tenergy") && teKey && teSecret;
   let tzBalance = null, tzOk = false;
-  if (usesTz) {
-    const b = await energy.tronzapBalance({ token, secret, baseUrl: process.env.TRONZAP_BASE_URL || cfg.tronzap_base_url });
-    if (b.ok) { tzBalance = b.balance; tzOk = (b.balance == null) || Number(b.balance) > 0; }
-  }
-  const genericRental = (mode === "auto" || mode === "rental") && !usesTz && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
+  if (usesTz) { const b = await energy.tronzapBalance({ token, secret, baseUrl: process.env.TRONZAP_BASE_URL || cfg.tronzap_base_url }); if (b.ok) { tzBalance = b.balance; tzOk = (b.balance == null) || Number(b.balance) > 0; } }
+  let tsBalance = null, tsOk = false;
+  if (usesTs) { const b = await energy.tronsaveBalance({ apiKey: tsKey, baseUrl: process.env.TRONSAVE_BASE_URL || cfg.tronsave_base_url }); if (b.ok) { tsBalance = b.balance; tsOk = (b.balance == null) || Number(b.balance) > 0; } }
+  let teBalance = null, teOk = false;
+  if (usesTe) { const b = await energy.tenergyBalance({ apiKey: teKey, apiSecret: teSecret, baseUrl: process.env.TENERGY_BASE_URL || cfg.tenergy_base_url || (cfg.tron_network === "nile" ? "https://api-nile.tenergy.me" : "https://api.tenergy.me") }); if (b.ok) { teBalance = b.balance; teOk = (b.balance == null) || Number(b.balance) > 0; } }
+  const genericRental = rentAllowed && (!forced || forced === "generic") && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
   const staked = (mode === "auto" || mode === "stake") && Number(cfg.energy_delegate_trx || 0) > 0;
-  const ready = tzOk || gasOk || staked || genericRental;
+  const ready = tzOk || tsOk || teOk || gasOk || staked || genericRental;
   let reason = "";
-  if (!ready) reason = usesTz
-    ? "TronZap balance looks empty and the gas wallet has no TRX — fund your TronZap balance or send TRX to the gas wallet."
-    : "No energy source: fund the gas wallet with TRX, or configure and fund an energy provider (TronZap).";
-  const out = { ready, mode, provider: usesTz ? "tronzap" : (genericRental ? "generic" : (staked ? "stake" : "burn")), gas_trx: gasTrx, gas_fund_trx: gasFund, gas_ok: gasOk, tronzap_configured: !!usesTz, tronzap_balance: tzBalance, tronzap_ok: tzOk, staked, reason };
+  if (!ready) reason = (usesTz || usesTs || usesTe)
+    ? "Your energy provider balance looks empty and the gas wallet has no TRX — fund your provider balance or send TRX to the gas wallet."
+    : "No energy source: fund the gas wallet with TRX, or configure and fund an energy provider (TronZap / TronSave / TEnergy).";
+  const out = { ready, mode, provider: usesTz ? "tronzap" : (usesTs ? "tronsave" : (usesTe ? "tenergy" : (genericRental ? "generic" : (staked ? "stake" : "burn")))), gas_trx: gasTrx, gas_fund_trx: gasFund, gas_ok: gasOk, tronzap_configured: !!usesTz, tronzap_balance: tzBalance, tronzap_ok: tzOk, tronsave_configured: !!usesTs, tronsave_balance: tsBalance, tronsave_ok: tsOk, tenergy_configured: !!usesTe, tenergy_balance: teBalance, tenergy_ok: teOk, staked, reason };
   _readyCache = out; _readyAt = Date.now();
   return out;
 }
 // Fast per-payout preflight: block early with a clear message only when there is NO way to pay resources.
 async function assertResourceSource(wallet) {
   const cfg = get(); const mode = cfg.energy_mode || "auto";
-  const { token, secret, provider } = _tzCreds();
-  const tzConfigured = (mode === "auto" || mode === "rental") && provider === "tronzap" && token && secret;
-  const genericRental = (mode === "auto" || mode === "rental") && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
+  const rentAllowed = (mode === "auto" || mode === "rental");
+  const forced = (process.env.ENERGY_PROVIDER || cfg.energy_provider || "").trim();
+  const { token, secret } = _tzCreds();
+  const tsKey = process.env.TRONSAVE_API_KEY || cfg.tronsave_api_key || "";
+  const teKey = process.env.TENERGY_API_KEY || cfg.tenergy_api_key || "";
+  const teSecret = process.env.TENERGY_API_SECRET || cfg.tenergy_api_secret || "";
+  const tzConfigured = rentAllowed && (!forced || forced === "tronzap") && token && secret;
+  const tsConfigured = rentAllowed && (!forced || forced === "tronsave") && tsKey;
+  const teConfigured = rentAllowed && (!forced || forced === "tenergy") && teKey && teSecret;
+  const genericRental = rentAllowed && (!forced || forced === "generic") && !!(process.env.ENERGY_RENTAL_URL || cfg.energy_rental_url);
   const staked = (mode === "auto" || mode === "stake") && Number(cfg.energy_delegate_trx || 0) > 0;
-  if (tzConfigured || genericRental || staked) return; // a provider exists; the send + fallback handle the rest
+  if (tzConfigured || tsConfigured || teConfigured || genericRental || staked) return; // a provider exists; the send + fallback handle the rest
   const fee = await getFee();
   let gasTrx = 0; try { if (fee) gasTrx = await chain.nativeBalance(fee.address); } catch { gasTrx = 0; }
   if (gasTrx >= Number(cfg.gas_fund_trx || 20)) return; // gas wallet can fund the TRX burn

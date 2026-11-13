@@ -56,6 +56,17 @@ function makeSqlite() {
   const col = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
   const add = (t, c, d) => { if (!col(t).includes(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${d}`); };
   add("movements", "usd_rate", "TEXT"); add("movements", "energy", "TEXT");
+  // indexes for fast reports / filtering / pagination
+  for (const ix of [
+    "CREATE INDEX IF NOT EXISTS idx_mv_kind ON movements(kind)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_wallet ON movements(wallet_id)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_created ON movements(created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_from ON movements(from_address)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_to ON movements(to_address)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_tx ON movements(tx_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_mv_status ON movements(status)",
+    "CREATE INDEX IF NOT EXISTS idx_w_owner ON wallets(owner_user_id)",
+  ]) { try { db.exec(ix); } catch (e) { /* ignore */ } }
   add("users", "customer_type", "TEXT"); add("users", "auto_approve_limit", "REAL");
   add("users", "phone", "TEXT"); add("users", "pay_token", "TEXT");
   add("disbursement_requests", "customer_id", "INTEGER"); add("disbursement_requests", "idempotency_key", "TEXT");
@@ -100,6 +111,11 @@ async function makeMysql() {
     for (const stmt of schema.split(";").map((s) => s.trim()).filter(Boolean)) await conn.query(stmt);
     // idempotent migrations for existing databases
     try { await conn.query("ALTER TABLE movements ADD COLUMN energy VARCHAR(20)"); } catch (e) { /* already exists */ }
+    for (const ix of [
+      "CREATE INDEX idx_mv_created ON movements(created_at)",
+      "CREATE INDEX idx_mv_from ON movements(from_address)",
+      "CREATE INDEX idx_w_owner ON wallets(owner_user_id)",
+    ]) { try { await conn.query(ix); } catch (e) { /* already exists */ } }
   } finally { conn.release(); }
   // SQLite-isms -> MySQL: null-safe equality, and CAST(x AS REAL) (unsupported in MySQL).
   const fix = (sql) => sql.replace(/ IS \?/g, " <=> ?").replace(/ AS REAL\)/g, " AS DECIMAL(38,8))");

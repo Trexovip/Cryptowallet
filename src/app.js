@@ -902,6 +902,13 @@ app.get("/admin/config", currentUser, adminRequired, async (_req, res) => {
     tronzap_bandwidth: Number(c.tronzap_bandwidth != null ? c.tronzap_bandwidth : 345),
     tronzap_activate: !!c.tronzap_activate,
     tronzap_smart_bandwidth: c.tronzap_smart_bandwidth !== false,
+    tronsave_api_key_masked: maskKey(c.tronsave_api_key || ""),
+    has_tronsave_key: !!c.tronsave_api_key,
+    tenergy_api_key: c.tenergy_api_key || "",
+    tenergy_api_secret_masked: maskKey(c.tenergy_api_secret || ""),
+    has_tenergy_secret: !!c.tenergy_api_secret,
+    tenergy_base_url: c.tenergy_base_url || "",
+    tronsave_base_url: c.tronsave_base_url || "",
     energy_delegate_trx: Number(c.energy_delegate_trx || 0),
     energy_rental_url: c.energy_rental_url || "",
     energy_rental_api_key: c.energy_rental_api_key || "",
@@ -944,6 +951,11 @@ app.post("/admin/config", currentUser, adminRequired, async (req, res) => {
   if (b.tronzap_bandwidth !== undefined) c.tronzap_bandwidth = Math.max(0, Number(b.tronzap_bandwidth) || 0);
   if (b.tronzap_activate !== undefined) c.tronzap_activate = !!b.tronzap_activate;
   if (b.tronzap_smart_bandwidth !== undefined) c.tronzap_smart_bandwidth = !!b.tronzap_smart_bandwidth;
+  if (b.tronsave_api_key !== undefined && String(b.tronsave_api_key||"").trim() && !/[\u2022\u2026*]/.test(String(b.tronsave_api_key))) c.tronsave_api_key = String(b.tronsave_api_key).trim();
+  if (b.tronsave_base_url !== undefined) c.tronsave_base_url = String(b.tronsave_base_url || "").trim();
+  if (b.tenergy_api_key !== undefined) c.tenergy_api_key = String(b.tenergy_api_key || "").trim();
+  if (b.tenergy_api_secret !== undefined && String(b.tenergy_api_secret||"").trim() && !/[\u2022\u2026*]/.test(String(b.tenergy_api_secret))) c.tenergy_api_secret = String(b.tenergy_api_secret).trim();
+  if (b.tenergy_base_url !== undefined) c.tenergy_base_url = String(b.tenergy_base_url || "").trim();
   if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
@@ -1410,6 +1422,57 @@ app.get("/transactions", currentUser, staffOrAdmin, async (req, res) => {
 });
 
 // Analytics / reports summary (admin)
+// USDT received per customer (deposits into their wallets). Optional from/to date range.
+app.get("/reports/by-customer", currentUser, adminRequired, wrap(async (req, res) => {
+  const db = getDb();
+  const w = ["m.kind='deposit_in'", "m.token='USDT'"]; const p = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "")) { w.push("substr(m.created_at,1,10) >= ?"); p.push(req.query.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "")) { w.push("substr(m.created_at,1,10) <= ?"); p.push(req.query.to); }
+  const rows = await db.prepare(
+    `SELECT u.id customer_id, u.username, u.customer_type,
+       COUNT(m.id) deposits, COALESCE(SUM(CAST(m.amount AS REAL)),0) total_received, MAX(m.created_at) last_deposit
+     FROM movements m JOIN wallets w ON m.wallet_id=w.id JOIN users u ON w.owner_user_id=u.id
+     WHERE ${w.join(" AND ")}
+     GROUP BY u.id, u.username, u.customer_type
+     ORDER BY total_received DESC`).all(...p);
+  const total = rows.reduce((s, r) => s + Number(r.total_received || 0), 0);
+  res.json({ rows: rows.map((r) => ({ ...r, total_received: Number(r.total_received) })), grand_total: total, customers: rows.length });
+}));
+
+// Per-wallet totals: received (deposits), sent (payouts), tx count, last activity. Optional date range.
+app.get("/reports/by-wallet", currentUser, adminRequired, wrap(async (req, res) => {
+  const db = getDb();
+  const dcond = []; const p = [];
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "")) { dcond.push("substr(m.created_at,1,10) >= ?"); p.push(req.query.from); }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "")) { dcond.push("substr(m.created_at,1,10) <= ?"); p.push(req.query.to); }
+  const on = ["m.wallet_id=w.id"].concat(dcond).join(" AND ");
+  const rows = await db.prepare(
+    `SELECT w.id wallet_id, w.address, w.wtype, w.label, u.username owner,
+       COALESCE(SUM(CASE WHEN m.kind='deposit_in' THEN CAST(m.amount AS REAL) ELSE 0 END),0) received,
+       COALESCE(SUM(CASE WHEN m.kind IN ('disburse_out','treasury_out') THEN CAST(m.amount AS REAL) ELSE 0 END),0) sent,
+       COUNT(m.id) txs, MAX(m.created_at) last_activity
+     FROM wallets w LEFT JOIN movements m ON ${on} LEFT JOIN users u ON w.owner_user_id=u.id
+     GROUP BY w.id, w.address, w.wtype, w.label, u.username
+     ORDER BY received DESC, sent DESC`).all(...p);
+  res.json({ rows: rows.map((r) => ({ ...r, received: Number(r.received), sent: Number(r.sent) })) });
+}));
+
+// Per-day deposit trend over a date range (defaults to the last 30 days).
+app.get("/reports/deposits-trend", currentUser, adminRequired, wrap(async (req, res) => {
+  const db = getDb();
+  const today = new Date().toISOString().slice(0, 10);
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : today;
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const rows = await db.prepare(
+    "SELECT substr(created_at,1,10) d, COALESCE(SUM(CAST(amount AS REAL)),0) v, COUNT(*) c FROM movements WHERE kind='deposit_in' AND token='USDT' AND substr(created_at,1,10) >= ? AND substr(created_at,1,10) <= ? GROUP BY substr(created_at,1,10)"
+  ).all(from, to);
+  const map = {}; let cur = new Date(from + "T00:00:00Z"); const end = new Date(to + "T00:00:00Z"); let guard = 0;
+  while (cur <= end && guard < 400) { const k = cur.toISOString().slice(0, 10); map[k] = { date: k, deposits: 0, payouts: 0, count: 0 }; cur = new Date(cur.getTime() + 86400000); guard++; }
+  for (const r of rows) { if (map[r.d]) { map[r.d].deposits = Number(r.v); map[r.d].count = r.c; } }
+  const series = Object.values(map);
+  res.json({ series, from, to, total_volume: series.reduce((s, x) => s + x.deposits, 0), total_count: series.reduce((s, x) => s + x.count, 0) });
+}));
+
 app.get("/reports/summary", currentUser, adminRequired, async (req, res) => {
   const db = getDb();
   const days = Math.min(90, Math.max(7, parseInt(req.query.days, 10) || 14));

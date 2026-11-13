@@ -370,6 +370,18 @@ pays). The platform's own gas is handled automatically:
   fails** (fallback so payouts never stall). `bandwidth_trx` defaults to 0; raise it only if high-volume
   wallets hit bandwidth limits.
 
+### Multiple energy providers with automatic failover
+
+Two providers are built in — **TronZap** and **TronSave** — plus a generic rental webhook and self-staked
+energy. In `auto` mode the platform tries them in order and the first that succeeds wins, so a payout
+stays gas-free even if one provider is down or empty:
+
+**TronZap → TronSave → generic rental → self-stake → (TRX-burn fallback)**
+
+Set `energy_provider` to force a single provider, or leave it blank to use all configured ones with
+failover. Credentials can come from Settings or env (`TRONZAP_API_TOKEN`/`TRONZAP_API_SECRET`,
+`TRONSAVE_API_KEY`). The dashboard readiness banner checks every configured provider's balance.
+
 ### TronZap (built-in, recommended)
 
 TronZap is integrated natively. To make every payout gas-free:

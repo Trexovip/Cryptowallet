@@ -50,6 +50,11 @@ const DEFAULTS = {
   tronzap_bandwidth: 345,         // bandwidth to rent alongside energy (0 = energy only; 345 covers one USDT transfer)
   tronzap_activate: false,        // ask TronZap to activate brand-new destination addresses too
   tronzap_smart_bandwidth: true,  // rent bandwidth only when the wallet's free bandwidth can't cover the transfer
+  tronsave_api_key: "",           // TronSave (tronsave.io) API key — second energy provider (failover after TronZap)
+  tronsave_base_url: "",          // optional override; defaults to https://api.tronsave.io
+  tenergy_api_key: "",            // TEnergy (tenergy.me) API key id (ak_...) — third energy provider
+  tenergy_api_secret: "",         // TEnergy API secret (sk_...) — signs requests, never sent
+  tenergy_base_url: "",           // optional override; defaults to https://api.tenergy.me (api-nile on Nile)
   energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
   energy_rental_api_key: "",      // rental mode: bearer token for the provider
   energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)

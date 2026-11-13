@@ -408,3 +408,7 @@ tbody tr:hover td{background:color-mix(in srgb,var(--accent-soft) 45%,transparen
 .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px}
 .pager-ctrls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .pager-ctrls .btn[disabled]{opacity:.45;pointer-events:none}
+
+/* clickable report rows */
+tr.click-row{cursor:pointer}
+tr.click-row:hover{background:var(--hover,rgba(99,102,241,.06))}

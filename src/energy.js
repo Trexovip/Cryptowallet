@@ -50,6 +50,73 @@ async function tronzapBalance(opts = {}) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
+// TronSave (https://tronsave.io) v2 API. Auth: `apikey` header. Buys ENERGY (resourceAmount must be
+// > 64000). Balance comes from /v2/user-info in SUN. Prepaid, like TronZap.
+async function tronsaveRent(address, energy, opts = {}) {
+  const key = opts.apiKey;
+  if (!key) return { ok: false, error: "missing TronSave api key" };
+  const baseUrl = (opts.baseUrl || "https://api.tronsave.io").replace(/\/+$/, "");
+  const amt = Math.max(65000, Number(energy) || 65000);
+  const body = JSON.stringify({ receiver: address, resourceType: "ENERGY", resourceAmount: amt, durationSec: Number(opts.durationSec || 3600) });
+  try {
+    const res = await fetch(baseUrl + "/v2/buy-resource", { method: "POST", headers: { apikey: key, "Content-Type": "application/json" }, body });
+    const j = await res.json().catch(() => null);
+    const d = j && (j.data || j);
+    const ok = !!(res.ok && d && (d.orderId || d.order_id || d.id || j.success === true || j.code === 0));
+    return { ok, result: j, error: ok ? null : ((j && (j.message || j.error)) || ("http " + (res && res.status))) };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+async function tronsaveBalance(opts = {}) {
+  const key = opts.apiKey;
+  if (!key) return { ok: false };
+  const baseUrl = (opts.baseUrl || "https://api.tronsave.io").replace(/\/+$/, "");
+  try {
+    const res = await fetch(baseUrl + "/v2/user-info", { headers: { apikey: key } });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j) return { ok: false };
+    const d = j.data || j;
+    const sun = d.balance != null ? Number(d.balance) : (d.balanceSun != null ? Number(d.balanceSun) : null);
+    return { ok: true, balance: (sun == null || isNaN(sun)) ? null : sun / 1e6 }; // SUN -> TRX
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+// TEnergy (https://tenergy.me) — a TRON energy router. Signed REST: three headers, HMAC-SHA256 over
+// `timestamp + METHOD + path + query + body`. POST /v1/orders buys energy; GET /v1/balance reads balance.
+function tenergySign(secret, ts, method, path, query, body) {
+  return crypto.createHmac("sha256", secret).update(ts + method + path + query + body).digest("base64");
+}
+async function tenergyRent(address, energy, opts = {}) {
+  const key = opts.apiKey, secret = opts.apiSecret;
+  if (!key || !secret) return { ok: false, error: "missing TEnergy key/secret" };
+  const baseUrl = (opts.baseUrl || "https://api.tenergy.me").replace(/\/+$/, "");
+  const path = "/v1/orders";
+  const payload = { client_order_id: opts.clientOrderId || ("w" + Date.now()), resource: "energy", amount: Math.max(32000, Number(energy) || 65000), tier: opts.tier || "1h", receiver: address, activate: opts.activate !== false };
+  const body = JSON.stringify(payload);
+  const ts = new Date().toISOString();
+  const sign = tenergySign(secret, ts, "POST", path, "", body);
+  try {
+    const res = await fetch(baseUrl + path, { method: "POST", headers: { "X-API-KEY": key, "X-API-TIMESTAMP": ts, "X-API-SIGN": sign, "Content-Type": "application/json" }, body });
+    const j = await res.json().catch(() => null);
+    const ok = !!((res.status === 200 || res.status === 201) && j && (j.id || j.status) && j.status !== "failed");
+    return { ok, result: j, error: ok ? null : ((j && (j.error || j.message || j.slug)) || ("http " + (res && res.status))) };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+async function tenergyBalance(opts = {}) {
+  const key = opts.apiKey, secret = opts.apiSecret;
+  if (!key || !secret) return { ok: false };
+  const baseUrl = (opts.baseUrl || "https://api.tenergy.me").replace(/\/+$/, "");
+  const ts = new Date().toISOString();
+  const sign = tenergySign(secret, ts, "GET", "/v1/balance", "", "");
+  try {
+    const res = await fetch(baseUrl + "/v1/balance", { headers: { "X-API-KEY": key, "X-API-TIMESTAMP": ts, "X-API-SIGN": sign } });
+    const j = await res.json().catch(() => null);
+    if (!res.ok || !j) return { ok: false };
+    const d = j.data || j;
+    const sun = d.balance_sun != null ? Number(d.balance_sun) : (d.available_sun != null ? Number(d.available_sun) : (d.balance != null ? Number(d.balance) : null));
+    return { ok: true, balance: (sun == null || isNaN(sun)) ? null : sun / 1e6 };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
 // Generic provider: POST { address, energy } with an optional bearer key; any 2xx = success.
 async function genericRent(address, energy, opts = {}) {
   if (!opts.url) return { ok: false, error: "no rental url" };
@@ -61,4 +128,4 @@ async function genericRent(address, energy, opts = {}) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-module.exports = { tronzapRent, genericRent, tronzapBalance };
+module.exports = { tronzapRent, genericRent, tronzapBalance, tronsaveRent, tronsaveBalance, tenergyRent, tenergyBalance };
