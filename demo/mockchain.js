@@ -10,6 +10,7 @@ const usdt = {};       // address -> USDT balance
 const _transfers = [];  // on-chain TRC-20 transfer log (for reconciliation tests)
 const _delegations = []; // energy delegations (for gas-free tests)
 const _bandwidth = {};   // address -> available bandwidth (default ample)
+const _energy = {};      // address -> available energy delivered by a provider (for tests)
 const trx = {};        // address -> TRX balance
 const incoming = {};   // address -> [{ from, to, txid, amount, ts }]
 const names = {};      // address -> on-chain account name
@@ -41,7 +42,8 @@ module.exports = {
     trx[toAddress] = (trx[toAddress] || 0) + trxOut;
     return { tx: txid(), trxOut };
   },
-  async accountResources(address) { const staked = _staked[address] || 0; const energy = Math.round(staked * 100); return { energyLimit: energy, energyUsed: 0, energyAvailable: energy, netLimit: 600, netUsed: 0, tronPowerLimit: staked }; },
+  async accountResources(address) { const staked = _staked[address] || 0; const energy = (_energy[address] != null ? _energy[address] : Math.round(staked * 100)); return { energyLimit: energy, energyUsed: 0, energyAvailable: energy, netLimit: 600, netUsed: 0, tronPowerLimit: staked }; },
+  __setEnergy(addr, n) { _energy[addr] = n; },
   async freezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = (_staked[a] || 0) + Number(trx); return txid(); },
   async unfreezeEnergy(pk, trx) { const a = addrFromPk(String(pk).replace(/^0x/, "")); _staked[a] = Math.max(0, (_staked[a] || 0) - Number(trx)); return txid(); },
   async delegateEnergy(pk, to, trx) { _delegations.push({ to, trx }); return txid(); },

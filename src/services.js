@@ -133,7 +133,7 @@ async function ensureEnergy(wallet) {
   const teSecret = process.env.TENERGY_API_SECRET || cfg.tenergy_api_secret || "";
   const teBase = process.env.TENERGY_BASE_URL || cfg.tenergy_base_url || (cfg.tron_network === "nile" ? "https://api-nile.tenergy.me" : "https://api.tenergy.me");
   if (rentAllowed && want("tenergy") && teKey && teSecret) chainFns.push(["TEnergy", async () => {
-    const r = await energy.tenergyRent(wallet.address, rentalAmt, { apiKey: teKey, apiSecret: teSecret, baseUrl: teBase, activate: !!cfg.tronzap_activate, clientOrderId: "w" + (wallet.id || "") + "-" + Date.now() });
+    const r = await energy.tenergyRent(wallet.address, rentalAmt, { apiKey: teKey, apiSecret: teSecret, baseUrl: teBase, activate: !!cfg.tenergy_activate, tier: cfg.tenergy_tier || "1h", clientOrderId: "w" + (wallet.id || "") + "-" + Date.now() });
     return r.ok ? true : (console.log("[energy] TEnergy failed:", r.error), false);
   }]);
   if (rentAllowed && want("generic") && genericUrl) chainFns.push(["generic", async () => {
@@ -154,13 +154,26 @@ async function ensureGas(wallet) {
   const energyPerTx = Number(get().energy_rental_amount || 65000); // energy a USDT transfer consumes
   const fee = await getFee();
   if (!fee || !wallet) return energyPerTx;
-  const energized = await ensureEnergy(wallet);
+  let energized = await ensureEnergy(wallet);
+  // Providers (TronZap/TronSave/TEnergy) accept the order before the delegation actually lands on chain.
+  // Verify the energy is REALLY on the wallet before sending gas-free; otherwise the transfer would fail
+  // with "account resource insufficient". If it doesn't arrive in time, fall back to a TRX burn.
+  if (energized) {
+    const needE = Number(get().energy_rental_amount || 65000);
+    const tries = Number(process.env.ENERGY_CONFIRM_TRIES || 8);
+    const gap = Number(process.env.ENERGY_CONFIRM_INTERVAL_MS || 2000);
+    let haveE = 0;
+    for (let i = 0; i < tries; i++) {
+      try { haveE = (await chain.accountResources(wallet.address)).energyAvailable || 0; } catch { haveE = 0; }
+      if (haveE >= needE) break;
+      if (i < tries - 1) await sleep(gap);
+    }
+    if (haveE < needE) { console.log("[energy] rented energy did not arrive in time for " + wallet.address + " — falling back to TRX"); energized = false; }
+  }
   let trx = 0;
   try { trx = await chain.nativeBalance(wallet.address); } catch { trx = 0; }
-  // If energy was provisioned (TronZap/stake), send NO TRX for gas — the transfer uses the rented/
-  // delegated energy and the account's free daily bandwidth. Only when energy provisioning FAILED do
-  // we fall back to funding TRX so TRON can burn it and the payout still goes through. (bandwidth_trx
-  // defaults to 0; raise it only if you hit bandwidth limits on high-volume wallets.)
+  // Energy confirmed on-chain -> send NO TRX (gas-free, only bandwidth_trx if set). Energy absent ->
+  // fund enough TRX for TRON to burn for the resources so the payout still goes through.
   const need = energized ? Number(get().bandwidth_trx != null ? get().bandwidth_trx : 0) : Number(get().gas_fund_trx);
   if (need <= 0 || trx >= need) return energyPerTx;
   const feePk = sec.decryptSecret(fee.enc_privkey);

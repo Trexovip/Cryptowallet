@@ -1696,8 +1696,12 @@ async function renderSettings(){
       <div class="field"><label>TronZap bandwidth per transfer</label><input id="cfgTzBw" class="input" type="number" min="0" step="1" value="${Number(c.tronzap_bandwidth!=null?c.tronzap_bandwidth:345)}"><div class="hint">Rented with energy so transfers need zero TRX (345 ≈ one USDT transfer; 0 = energy only, relies on free daily bandwidth).</div></div>
       <label class="check" style="margin-top:8px"><input type="checkbox" id="cfgTzSmartBw" ${(c.tronzap_smart_bandwidth!==false)?"checked":""}> Only rent bandwidth when free bandwidth is insufficient (saves cost)</label>
       <div class="field"><label>TronSave API key (failover provider)</label><input id="cfgTsKey" class="input" value="${esc(c.tronsave_api_key_masked||'')}" placeholder="${c.has_tronsave_key?'saved — leave to keep':'from tronsave.io'}"><div class="hint">Used automatically if TronZap is unavailable or its balance is empty. Get the apikey at tronsave.io → Account Info.</div></div>
-      <div class="field"><label>TEnergy API key (failover provider)</label><input id="cfgTeKey" class="input" value="${esc(c.tenergy_api_key||'')}" placeholder="ak_live_… from tenergy.me"></div>
-      <div class="field"><label>TEnergy API secret</label><input id="cfgTeSecret" class="input" value="${esc(c.tenergy_api_secret_masked||'')}" placeholder="${c.has_tenergy_secret?'saved — leave to keep':'sk_live_… from tenergy.me'}"><div class="hint">TEnergy routes to the cheapest connected provider. Used in the failover chain; signed with HMAC.</div></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      <div class="hint" style="margin-bottom:8px"><b>TEnergy (tenergy.me) — independent energy provider</b> — its own account, balance and settings, used on its own or in the failover chain. Signed with HMAC (3 headers).</div>
+      <div class="field"><label>TEnergy API key (ak_…)</label><input id="cfgTeKey" class="input" value="${esc(c.tenergy_api_key||'')}" placeholder="ak_live_… from tenergy.me"></div>
+      <div class="field"><label>TEnergy API secret (sk_…)</label><input id="cfgTeSecret" class="input" value="${esc(c.tenergy_api_secret_masked||'')}" placeholder="${c.has_tenergy_secret?'saved — leave to keep':'sk_live_… from tenergy.me'}"></div>
+      <div class="field"><label>TEnergy rental tier</label><select id="cfgTeTier" class="input">${["5m","10m","15m","30m","1h","1d"].map(x=>`<option value="${x}"${(c.tenergy_tier||'1h')===x?' selected':''}>${x}</option>`).join("")}</select></div>
+      <label class="check" style="margin-top:4px"><input type="checkbox" id="cfgTeActivate" ${c.tenergy_activate?'checked':''}> TEnergy: activate brand-new receiver addresses (adds an activation fee)</label>
       <div class="field"><label>Generic rental endpoint URL</label><input id="cfgRentUrl" class="input" value="${esc(c.energy_rental_url||'')}" placeholder="https://provider.example/api/delegate"></div>
       <div class="field"><label>Generic rental API key</label><input id="cfgRentKey" class="input" value="${esc(c.energy_rental_api_key||'')}"></div>
       <div class="field"><label>Energy per transfer</label><input id="cfgRentAmt" class="input" type="number" min="0" step="1000" value="${Number(c.energy_rental_amount!=null?c.energy_rental_amount:65000)}"></div>
@@ -1769,6 +1773,8 @@ async function renderSettings(){
         tronsave_api_key: ($("#cfgTsKey") && !/[\u2022\u2026*]/.test($("#cfgTsKey").value)) ? $("#cfgTsKey").value.trim() : undefined,
         tenergy_api_key: $("#cfgTeKey") ? $("#cfgTeKey").value.trim() : undefined,
         tenergy_api_secret: ($("#cfgTeSecret") && !/[\u2022\u2026*]/.test($("#cfgTeSecret").value)) ? $("#cfgTeSecret").value.trim() : undefined,
+        tenergy_tier: $("#cfgTeTier") ? $("#cfgTeTier").value : undefined,
+        tenergy_activate: $("#cfgTeActivate") ? $("#cfgTeActivate").checked : undefined,
         energy_delegate_trx: parseFloat($("#cfgEnergyDelegate").value) || 0,
         energy_rental_url: $("#cfgRentUrl").value.trim(),
         energy_rental_api_key: $("#cfgRentKey").value.trim(),

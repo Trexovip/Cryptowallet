@@ -55,6 +55,8 @@ const DEFAULTS = {
   tenergy_api_key: "",            // TEnergy (tenergy.me) API key id (ak_...) — third energy provider
   tenergy_api_secret: "",         // TEnergy API secret (sk_...) — signs requests, never sent
   tenergy_base_url: "",           // optional override; defaults to https://api.tenergy.me (api-nile on Nile)
+  tenergy_activate: false,        // TEnergy: activate brand-new receiver addresses (own setting, independent of TronZap)
+  tenergy_tier: "1h",             // TEnergy rental tier (5m,10m,15m,30m,1h,1d)
   energy_rental_url: "",          // rental mode: provider endpoint that delegates energy to an address (POST {address, energy})
   energy_rental_api_key: "",      // rental mode: bearer token for the provider
   energy_rental_amount: 65000,    // rental mode: energy units to request per transfer (a USDT transfer needs ~65k)

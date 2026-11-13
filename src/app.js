@@ -908,6 +908,8 @@ app.get("/admin/config", currentUser, adminRequired, async (_req, res) => {
     tenergy_api_secret_masked: maskKey(c.tenergy_api_secret || ""),
     has_tenergy_secret: !!c.tenergy_api_secret,
     tenergy_base_url: c.tenergy_base_url || "",
+    tenergy_activate: !!c.tenergy_activate,
+    tenergy_tier: c.tenergy_tier || "1h",
     tronsave_base_url: c.tronsave_base_url || "",
     energy_delegate_trx: Number(c.energy_delegate_trx || 0),
     energy_rental_url: c.energy_rental_url || "",
@@ -956,6 +958,8 @@ app.post("/admin/config", currentUser, adminRequired, async (req, res) => {
   if (b.tenergy_api_key !== undefined) c.tenergy_api_key = String(b.tenergy_api_key || "").trim();
   if (b.tenergy_api_secret !== undefined && String(b.tenergy_api_secret||"").trim() && !/[\u2022\u2026*]/.test(String(b.tenergy_api_secret))) c.tenergy_api_secret = String(b.tenergy_api_secret).trim();
   if (b.tenergy_base_url !== undefined) c.tenergy_base_url = String(b.tenergy_base_url || "").trim();
+  if (b.tenergy_activate !== undefined) c.tenergy_activate = !!b.tenergy_activate;
+  if (b.tenergy_tier !== undefined && ["5m","10m","15m","30m","1h","1d"].includes(String(b.tenergy_tier))) c.tenergy_tier = String(b.tenergy_tier);
   if (b.energy_delegate_trx !== undefined) c.energy_delegate_trx = Math.max(0, Number(b.energy_delegate_trx) || 0);
   if (b.energy_rental_url !== undefined) c.energy_rental_url = String(b.energy_rental_url || "").trim();
   if (b.energy_rental_api_key !== undefined) c.energy_rental_api_key = String(b.energy_rental_api_key || "").trim();
